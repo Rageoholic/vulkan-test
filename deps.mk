@@ -2,4 +2,6 @@ CC=clang
 
 LDFLAGS += -lglfw -lvulkan
 
-sample: sample.o
+app: app.o rutils.a
+
+sample: sample.o rutils.a

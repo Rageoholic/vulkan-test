@@ -1,3 +1,5 @@
 /sample
 *.d
 *.o
+/app
+*.a
