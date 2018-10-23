@@ -28,6 +28,15 @@ typedef struct VkQueueIndices
     u32 presentIndex;
 } VkQueueIndices;
 
+typedef struct SwapChainSupportDetails
+{
+    VkSurfaceCapabilitiesKHR capabilities;
+    u32 formatCount;
+    VkSurfaceFormatKHR *formats;
+    u32 modeCount;
+    VkPresentModeKHR *presentModes;
+} SwapChainSupportDetails;
+
 errcode glfwCreateVkInstance(VkInstance *instance, const char *appName, u32 appVer, u32 apiVer)
 {
     VkApplicationInfo appInfo = {0};
@@ -56,24 +65,25 @@ errcode glfwCreateVkInstance(VkInstance *instance, const char *appName, u32 appV
 }
 
 typedef int (*SuitableDeviceCheck)(VkPhysicalDevice dev,
+                                   VkSurfaceKHR surf,
                                    const char **expectedDeviceExtensions,
                                    size_t numExpectedExtensions);
 
-VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, const char **expectedDeviceExtensions,
+VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, VkSurfaceKHR surf,
+                                     const char **expectedDeviceExtensions,
                                      size_t numExpectedExtensions,
                                      SuitableDeviceCheck checkFun)
 {
     u32 dcount = 0;
     vkEnumeratePhysicalDevices(instance, &dcount, NULL);
-    VkPhysicalDevice *devArr = malloc(sizeof(*devArr) * dcount);
+    VkPhysicalDevice devArr[dcount];
     vkEnumeratePhysicalDevices(instance, &dcount, devArr);
 
     for (u32 i = 0; i < dcount; i++)
     {
-        if (checkFun(devArr[i], expectedDeviceExtensions, numExpectedExtensions))
+        if (checkFun(devArr[i], surf, expectedDeviceExtensions, numExpectedExtensions))
         {
             VkPhysicalDevice ret = devArr[i];
-            free(devArr);
             return ret;
         }
     }
@@ -81,32 +91,12 @@ VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, const char **expectedD
     return VK_NULL_HANDLE;
 }
 
-i64 GetDeviceQueueGraphicsIndex(VkPhysicalDevice dev)
-{
-    u32 queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, NULL);
-
-    VkQueueFamilyProperties *pArr = malloc(sizeof(VkQueueFamilyProperties) * queueFamilyCount);
-
-    vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, pArr);
-    for (u32 i = 0; i < queueFamilyCount; i++)
-    {
-        if (pArr[i].queueCount > 0 && pArr[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-        {
-            free(pArr);
-            return i;
-        }
-    }
-    free(pArr);
-    return NULL_QUEUE_INDEX;
-}
-
 VkQueueIndices GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf)
 {
     u32 queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, NULL);
 
-    VkQueueFamilyProperties *pArr = malloc(sizeof(VkQueueFamilyProperties) * queueFamilyCount);
+    VkQueueFamilyProperties pArr[queueFamilyCount];
 
     VkQueueIndices ret = {0};
 
@@ -132,7 +122,6 @@ VkQueueIndices GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev
             break;
         }
     }
-    free(pArr);
     return ret;
 }
 
@@ -142,9 +131,10 @@ bool CheckDeviceExtensionSupport(VkPhysicalDevice dev,
 {
     u32 devExtensionCount = 0;
     vkEnumerateDeviceExtensionProperties(dev, NULL, &devExtensionCount, NULL);
-    VkExtensionProperties *extensionArr = malloc(sizeof(*extensionArr) * devExtensionCount);
+    VkExtensionProperties extensionArr[devExtensionCount];
     vkEnumerateDeviceExtensionProperties(dev, NULL, &devExtensionCount, extensionArr);
-    bool *confirmArray = calloc(extensionCount, sizeof(bool));
+    bool confirmArray[extensionCount];
+    memset(confirmArray, 0, sizeof(confirmArray));
 
     for (u32 i = 0; i < devExtensionCount; i++)
     {
@@ -168,18 +158,55 @@ bool CheckDeviceExtensionSupport(VkPhysicalDevice dev,
         }
     }
 
-    free(confirmArray);
-    free(extensionArr);
-
     return ret;
 }
 
+SwapChainSupportDetails QuerySwapChainSupport(VkPhysicalDevice dev, VkSurfaceKHR surf)
+{
+    SwapChainSupportDetails details = {0};
+
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, surf, &details.capabilities);
+
+    vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surf, &details.formatCount, NULL);
+    if (details.formatCount != 0)
+    {
+        details.formats = malloc(details.formatCount * sizeof(details.formats[0]));
+        vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surf, &details.formatCount, details.formats);
+    }
+
+    vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surf, &details.modeCount, NULL);
+    if (details.modeCount != 0)
+    {
+        details.presentModes = malloc(details.modeCount * sizeof(details.presentModes[0]));
+        vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surf, &details.modeCount, details.presentModes);
+    }
+
+    return details;
+}
+
+void DeleteSwapChainSupportDetails(SwapChainSupportDetails details)
+{
+    free(details.formats);
+    free(details.presentModes);
+}
+
 int ApplicationCheckDevice(VkPhysicalDevice dev,
+                           VkSurfaceKHR surf,
                            const char **extensionList,
                            size_t extensionCount)
 {
-    return (GetDeviceQueueGraphicsIndex(dev) != NULL_QUEUE_INDEX &&
-            CheckDeviceExtensionSupport(dev, extensionList, extensionCount));
+    VkQueueIndices indices = GetDeviceQueueGraphicsAndPresentationIndices(dev, surf);
+    if (indices.graphicsSupport && indices.presentSupport &&
+        CheckDeviceExtensionSupport(dev, extensionList, extensionCount))
+    {
+        SwapChainSupportDetails sd = QuerySwapChainSupport(dev, surf);
+
+        bool validSwapChain = sd.formats && sd.presentModes;
+
+        DeleteSwapChainSupportDetails(sd);
+        return validSwapChain;
+    }
+    return false;
 }
 
 errcode CreateVkRenderContext(VkPhysicalDevice physdev, VkPhysicalDeviceFeatures *df,
@@ -230,6 +257,7 @@ void DestroyVkRenderContext(VkRenderContext rc)
 
 int main(int argc, char **argv)
 {
+    int returnValue = ERROR_SUCCESS;
     ignore argc, ignore argv;
 
     glfwInit();
@@ -237,6 +265,12 @@ int main(int argc, char **argv)
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
     GLFWwindow *win = glfwCreateWindow(WIDTH, HEIGHT, "vulkan", NULL, NULL);
+    if (win == NULL)
+    {
+        fputs("ERROR! Could not create window\n", stderr);
+        returnValue = ERROR_INITIALIZATION_FAILURE;
+        goto errorNoWin;
+    }
 
     VkInstance instance;
     if (glfwCreateVkInstance(&instance, "Vulkan tutorial",
@@ -244,34 +278,38 @@ int main(int argc, char **argv)
                              VK_API_VERSION_1_0))
 
     {
-        fputs("ERROR! could not create instance", stderr);
-        return 1;
+        fputs("ERROR! could not create instance\n", stderr);
+        returnValue = ERROR_INITIALIZATION_FAILURE;
+        goto errorNoInstance;
     }
 
     VkSurfaceKHR surf;
     if (glfwCreateWindowSurface(instance, win, NULL, &surf) != VK_SUCCESS)
     {
-        fputs("NOT ABLE TO CREATE SURFACE", stdout);
-        return 1;
+        fputs("NOT ABLE TO CREATE SURFACE\n", stdout);
+        returnValue = ERROR_INITIALIZATION_FAILURE;
+        goto errorNoSurf;
     }
 
     const char *extensionList[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-    VkPhysicalDevice physdev = GetVkPhysicalDevice(instance, extensionList,
+    VkPhysicalDevice physdev = GetVkPhysicalDevice(instance, surf, extensionList,
                                                    countof(extensionList),
                                                    ApplicationCheckDevice);
     if (physdev == VK_NULL_HANDLE)
     {
-        fputs("NO SUITABLE DEVICE", stderr);
-        return 1;
+        fputs("NO SUITABLE DEVICE\n", stderr);
+        returnValue = ERROR_INITIALIZATION_FAILURE;
+        goto errorNoContext;
     }
 
     VkPhysicalDeviceFeatures features = {0};
     VkRenderContext rc;
     if (CreateVkRenderContext(physdev, &features, &rc, surf) != ERROR_SUCCESS)
     {
-        fputs("NOT ABLE TO CREATE DEVICE", stderr);
-        return 1;
+        fputs("NOT ABLE TO CREATE DEVICE\n", stderr);
+        returnValue = ERROR_INITIALIZATION_FAILURE;
+        goto errorNoContext;
     }
 
     while (!glfwWindowShouldClose(win))
@@ -279,11 +317,15 @@ int main(int argc, char **argv)
         glfwPollEvents();
     }
 
-    vkDestroySurfaceKHR(instance, surf, NULL);
     DestroyVkRenderContext(rc);
+errorNoContext:
+    vkDestroySurfaceKHR(instance, surf, NULL);
+errorNoSurf:
     vkDestroyInstance(instance, NULL);
+errorNoInstance:
     glfwDestroyWindow(win);
+errorNoWin:
     glfwTerminate();
 
-    return EXIT_SUCCESS;
+    return returnValue;
 }
