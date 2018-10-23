@@ -7,7 +7,7 @@ WARNINGS += -Wall -Wextra -Werror -Wno-error=unused-variable	\
 -Wno-reserved-id-macro -Wno-shorten-64-to-32 -Wno-double-promotion -Wno-missing-braces -Wno-missing-variable-declarations
 
 CFLAGS += $(WARNINGS) --std=c99 -MD -MP -masm=intel $(OPTFLAGS)
-CCFLAGS += $(WARNINGS) --std=c++17 -MD -MP -masm=intel $(OPTFLAGS) -fpermissive
+CCFLAGS += $(WARNINGS) --std=c++17 -MD -MP -masm=intel $(OPTFLAGS)
 DEPS += $(shell find . -name "*.d")
 
 

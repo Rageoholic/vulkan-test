@@ -4,6 +4,7 @@
 
 #include "rutils/math.h"
 
+#include "rutils/math.h"
 #include "rutils/string.h"
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -18,6 +19,9 @@ typedef struct VkRenderContext
     VkDevice dev;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
+    VkSwapchainKHR swapchain;
+    u32 imageCount;
+    VkImage *images;
 } VkRenderContext;
 
 typedef struct VkQueueIndices
@@ -234,6 +238,9 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev, VkPhysicalDeviceFeatures
     qci[1].pQueuePriorities = &queuePriority;
 
     VkDeviceCreateInfo dci = {0};
+    const char *extensionList[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    dci.enabledExtensionCount = countof(extensionList);
+    dci.ppEnabledExtensionNames = extensionList;
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 2;
     dci.pQueueCreateInfos = qci;
@@ -244,7 +251,115 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev, VkPhysicalDeviceFeatures
         return ERROR_INITIALIZATION_FAILURE;
     }
     vkGetDeviceQueue(rc.dev, qi.graphicsIndex, 0, &rc.graphicsQueue);
-    vkGetDeviceQueue(rc.dev, qi.presentIndex, 0, &rc.presentQueue);
+    if (qi.graphicsIndex != qi.presentIndex)
+    {
+        vkGetDeviceQueue(rc.dev, qi.presentIndex, 0, &rc.presentQueue);
+    }
+    else
+    {
+        rc.presentQueue = rc.graphicsQueue;
+    }
+    SwapChainSupportDetails d = QuerySwapChainSupport(physdev, surf);
+    VkSurfaceFormatKHR form = {0};
+    if (d.formatCount == 1 && d.formats[0].format == VK_FORMAT_UNDEFINED)
+    {
+        form = (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_UNORM,
+                                    VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    }
+    else
+    {
+        bool found = false;
+        for (u32 i = 0; i < d.formatCount; i++)
+        {
+            if (d.formats[i].format == VK_FORMAT_B8G8R8A8_UNORM &&
+                d.formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            {
+                form = d.formats[i];
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            form = d.formats[0];
+        }
+    }
+    VkPresentModeKHR pmode = VK_PRESENT_MODE_FIFO_KHR;
+    for (u32 i = 0; i < d.modeCount; i++)
+    {
+        if (d.presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+        {
+            pmode = VK_PRESENT_MODE_MAILBOX_KHR;
+            break;
+        }
+        else if (d.presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+        {
+            pmode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        }
+    }
+
+    VkExtent2D e = {0};
+    if (d.capabilities.currentExtent.width != UINT32_MAX)
+    {
+        e = d.capabilities.currentExtent;
+    }
+    else
+    {
+        e = (VkExtent2D){MAX_VAL(MIN_VAL(WIDTH, d.capabilities.minImageExtent.width),
+                                 d.capabilities.maxImageExtent.width),
+                         MAX_VAL(MIN_VAL(HEIGHT, d.capabilities.minImageExtent.width),
+                                 d.capabilities.currentExtent.height)};
+    }
+
+    u32 imageCount = d.capabilities.minImageCount + 1;
+    if (d.capabilities.maxImageCount > 0 && imageCount > d.capabilities.maxImageCount)
+    {
+        imageCount = d.capabilities.maxImageCount;
+    }
+
+    VkSwapchainCreateInfoKHR ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    ci.surface = surf;
+    ci.minImageCount = imageCount;
+    ci.imageFormat = form.format;
+    ci.imageColorSpace = form.colorSpace;
+    ci.imageExtent = e;
+    ci.imageArrayLayers = 1;
+    ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    u32 queueFamilyIndices[2] = {qi.graphicsIndex, qi.presentIndex};
+
+    if (qi.graphicsIndex == qi.presentIndex)
+    {
+        ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ci.queueFamilyIndexCount = 0;
+        ci.pQueueFamilyIndices = NULL;
+    }
+    else
+    {
+        ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ci.queueFamilyIndexCount = 2;
+        ci.pQueueFamilyIndices = queueFamilyIndices;
+    }
+
+    ci.preTransform = d.capabilities.currentTransform;
+    ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    ci.presentMode = pmode;
+    ci.clipped = VK_TRUE;
+    ci.oldSwapchain = VK_NULL_HANDLE;
+
+    if (vkCreateSwapchainKHR(rc.dev, &ci, NULL, &rc.swapchain) != VK_SUCCESS)
+    {
+        vkDestroyDevice(rc.dev, NULL);
+        return ERROR_EXTERNAL_LIB;
+    }
+
+    vkGetSwapchainImagesKHR(rc.dev, rc.swapchain, &imageCount, NULL);
+    rc.images = malloc(sizeof(rc.images) * imageCount);
+    vkGetSwapchainImagesKHR(rc.dev, rc.swapchain, &imageCount, rc.images);
+    rc.imageCount = imageCount;
+
+    DeleteSwapChainSupportDetails(d);
+
     *outrc = rc;
 
     return ERROR_SUCCESS;
@@ -252,6 +367,8 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev, VkPhysicalDeviceFeatures
 
 void DestroyVkRenderContext(VkRenderContext rc)
 {
+    free(rc.images);
+    vkDestroySwapchainKHR(rc.dev, rc.swapchain, NULL);
     vkDestroyDevice(rc.dev, NULL);
 }
 
