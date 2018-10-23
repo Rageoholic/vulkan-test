@@ -4,3 +4,4 @@
 /app
 *.a
 /.user.mk
+*.spv

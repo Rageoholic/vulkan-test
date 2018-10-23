@@ -1,10 +1,11 @@
 -include deps.mk
 
 
-WARNINGS += -Wall -Wextra -Werror -Wno-error=unused-variable	\
--Wno-error=unused-parameter -Wno-missing-field-initializers	\
--Wno-unused-function -Wno-unknown-pragmas -Wno-sign-conversion -Wno-padded\
--Wno-reserved-id-macro -Wno-shorten-64-to-32 -Wno-double-promotion -Wno-missing-braces -Wno-missing-variable-declarations
+WARNINGS += -Wall -Wextra -Werror -Wno-error=unused-variable			\
+-Wno-error=unused-parameter -Wno-missing-field-initializers			\
+-Wno-unused-function -Wno-unknown-pragmas -Wno-sign-conversion -Wno-padded	\
+-Wno-reserved-id-macro -Wno-shorten-64-to-32 -Wno-double-promotion		\
+-Wno-missing-braces -Wno-missing-variable-declarations -Wno-vla
 
 CFLAGS += $(WARNINGS) --std=c99 -MD -MP -masm=intel $(OPTFLAGS)
 CCFLAGS += $(WARNINGS) --std=c++17 -MD -MP -masm=intel $(OPTFLAGS)
