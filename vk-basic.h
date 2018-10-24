@@ -4,6 +4,12 @@
 #include "rutils/def.h"
 #include <vulkan/vulkan.h>
 
+typedef struct VkQueueIndices
+{
+    u32 graphicsIndex;
+    u32 presentIndex;
+} VkQueueIndices;
+
 typedef struct VkRenderContext
 {
     VkDevice dev;
@@ -15,16 +21,8 @@ typedef struct VkRenderContext
     VkImageView *imageViews;
     VkExtent2D e;
     VkSurfaceFormatKHR format;
-
+    VkQueueIndices indices;
 } VkRenderContext;
-
-typedef struct VkQueueIndices
-{
-    bool graphicsSupport;
-    u32 graphicsIndex;
-    bool presentSupport;
-    u32 presentIndex;
-} VkQueueIndices;
 
 typedef struct SwapChainSupportDetails
 {
@@ -45,7 +43,7 @@ VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, VkSurfaceKHR surf,
                                      size_t numExpectedExtensions,
                                      SuitableDeviceCheck checkFun);
 
-VkQueueIndices GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf);
+bool GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf, VkQueueIndices *indices);
 
 bool CheckDeviceExtensionSupport(VkPhysicalDevice dev,
                                  const char **extensionList,
@@ -77,4 +75,9 @@ VkRenderPass CreateRenderPass(const VkRenderContext *rc);
 
 VkFramebuffer *CreateFrameBuffers(VkRenderContext *rc, VkRenderPass renderpass);
 
+VkCommandPool CreateCommandPool(VkRenderContext *rc);
+
+VkCommandBuffer *AllocateCommandBuffers(VkRenderContext *rc, VkCommandPool commandPool,
+                                        VkRenderPass renderpass, VkPipeline graphicsPipeline,
+                                        VkFramebuffer *framebuffers);
 #endif

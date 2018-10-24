@@ -48,8 +48,9 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
                                  const char **extensionList,
                                  size_t extensionCount)
 {
-    VkQueueIndices indices = GetDeviceQueueGraphicsAndPresentationIndices(dev, surf);
-    if (indices.graphicsSupport && indices.presentSupport &&
+    VkQueueIndices indices;
+    bool properIndices = GetDeviceQueueGraphicsAndPresentationIndices(dev, surf, &indices);
+    if (properIndices &&
         CheckDeviceExtensionSupport(dev, extensionList, extensionCount))
     {
         SwapChainSupportDetails sd = QuerySwapChainSupport(dev, surf);
@@ -176,11 +177,34 @@ int main(int argc, char **argv)
         goto errorFramebuffers;
     }
 
+    VkCommandPool commandPool = CreateCommandPool(&rc);
+    if (framebuffers == VK_NULL_HANDLE)
+    {
+        fputs("Could not create command pool\n", stderr);
+        goto errorCommandPool;
+    }
+
+    VkCommandBuffer *commandBuffers = AllocateCommandBuffers(&rc, commandPool,
+                                                             renderpass, pipeline,
+                                                             framebuffers);
+
+    if (commandBuffers == NULL)
+    {
+        fputs("Could not properly set up command buffers\n", stderr);
+        goto errorCommandBuffers;
+    }
+
     while (!glfwWindowShouldClose(win))
     {
         glfwPollEvents();
     }
 
+    /* Cleanup */
+    free(commandBuffers);
+errorCommandBuffers:
+    vkDestroyCommandPool(rc.dev, commandPool, NULL);
+
+errorCommandPool:
     for (u32 i = 0; i < rc.imageCount; i++)
     {
         vkDestroyFramebuffer(rc.dev, framebuffers[i], NULL);

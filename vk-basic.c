@@ -25,38 +25,39 @@ VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, VkSurfaceKHR surf,
     return VK_NULL_HANDLE;
 }
 
-VkQueueIndices GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf)
+bool GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf, VkQueueIndices *indices)
 {
     u32 queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, NULL);
 
     VkQueueFamilyProperties pArr[queueFamilyCount];
 
-    VkQueueIndices ret = {0};
+    bool presentSupport = false;
+    bool graphicsSupport = false;
 
     vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, pArr);
     for (u32 i = 0; i < queueFamilyCount; i++)
     {
-        VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surf, &presentSupport);
+        VkBool32 presentSupportVK = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surf, &presentSupportVK);
 
-        if (pArr[i].queueCount > 0 && presentSupport)
+        if (pArr[i].queueCount > 0 && presentSupportVK)
         {
-            ret.presentSupport = true;
-            ret.presentIndex = i;
+            indices->presentIndex = i;
+            presentSupport = true;
         }
 
         if (pArr[i].queueCount > 0 && pArr[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
         {
-            ret.graphicsSupport = true;
-            ret.graphicsIndex = i;
+            indices->graphicsIndex = i;
+            graphicsSupport = true;
         }
-        if (ret.presentSupport && ret.graphicsSupport)
+        if (presentSupport && graphicsSupport)
         {
-            break;
+            return true;
         }
     }
-    return ret;
+    return false;
 }
 
 bool CheckDeviceExtensionSupport(VkPhysicalDevice dev,
@@ -132,8 +133,9 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
 {
     VkRenderContext rc = {0};
 
-    VkQueueIndices qi = GetDeviceQueueGraphicsAndPresentationIndices(physdev, surf);
-    if (!qi.graphicsSupport || !qi.presentSupport)
+    VkQueueIndices qi;
+    bool support = GetDeviceQueueGraphicsAndPresentationIndices(physdev, surf, &qi);
+    if (!support)
     {
         return ERROR_INVAL_PARAMETER;
     }
@@ -300,6 +302,7 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
     }
     rc.e = e;
     rc.format = form;
+    rc.indices = qi;
 
     DeleteSwapChainSupportDetails(d);
 
@@ -512,6 +515,78 @@ VkFramebuffer *CreateFrameBuffers(VkRenderContext *rc, VkRenderPass renderpass)
         fbci.layers = 1;
 
         if (vkCreateFramebuffer(rc->dev, &fbci, NULL, &ret[i]) != VK_SUCCESS)
+        {
+            free(ret);
+            return NULL;
+        }
+    }
+
+    return ret;
+}
+
+VkCommandPool CreateCommandPool(VkRenderContext *rc)
+{
+
+    VkCommandPoolCreateInfo poolInfo = {0};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = rc->indices.graphicsIndex;
+    VkCommandPool ret;
+    if (vkCreateCommandPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
+    {
+        return VK_NULL_HANDLE;
+    }
+    return ret;
+}
+
+VkCommandBuffer *AllocateCommandBuffers(VkRenderContext *rc, VkCommandPool commandPool,
+                                        VkRenderPass renderpass, VkPipeline graphicsPipeline,
+                                        VkFramebuffer *framebuffers)
+{
+    VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * rc->imageCount);
+
+    VkCommandBufferAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = rc->imageCount;
+
+    if (vkAllocateCommandBuffers(rc->dev, &allocInfo, ret) != VK_SUCCESS)
+    {
+        free(ret);
+        return NULL;
+    }
+
+    for (u32 i = 0; i < rc->imageCount; i++)
+    {
+        VkCommandBufferBeginInfo beginInfo;
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+
+        if (vkBeginCommandBuffer(ret[i], &beginInfo) != VK_SUCCESS)
+        {
+            free(ret);
+            return NULL;
+        }
+
+        VkRenderPassBeginInfo renderPassInfo = {0};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = renderpass;
+        renderPassInfo.framebuffer = framebuffers[i];
+        renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
+        renderPassInfo.renderArea.extent = rc->e;
+
+        VkClearValue clearColor = {0, 0, 0, 1};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(ret[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        {
+            vkCmdBindPipeline(ret[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdDraw(ret[i], 3, 1, 0, 0);
+        }
+        vkCmdEndRenderPass(ret[i]);
+
+        if (vkEndCommandBuffer(ret[i]) != VK_SUCCESS)
         {
             free(ret);
             return NULL;
