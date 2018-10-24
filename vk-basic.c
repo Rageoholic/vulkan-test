@@ -158,7 +158,7 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
     dci.enabledExtensionCount = countof(extensionList);
     dci.ppEnabledExtensionNames = extensionList;
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.queueCreateInfoCount = 2;
+    dci.queueCreateInfoCount = qi.graphicsIndex == qi.presentIndex ? 1 : 2;
     dci.pQueueCreateInfos = qci;
     dci.pEnabledFeatures = df;
 
@@ -330,6 +330,7 @@ VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
     VkShaderModuleCreateInfo ci = {0};
     ci.codeSize = shaderLen;
     ci.pCode = shaderSource;
+    ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     VkShaderModule mod;
 
     if (vkCreateShaderModule(rc->dev, &ci, NULL, &mod) != VK_SUCCESS)
@@ -483,12 +484,25 @@ VkRenderPass CreateRenderPass(const VkRenderContext *rc)
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachRef;
 
+    VkSubpassDependency dependency = {0};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
     VkRenderPassCreateInfo renderPassInfo = {0};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = 1;
     renderPassInfo.pAttachments = &colorAttachment;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
     VkRenderPass renderPass;
 
     if (vkCreateRenderPass(rc->dev, &renderPassInfo, NULL, &renderPass) != VK_SUCCESS)
@@ -558,7 +572,7 @@ VkCommandBuffer *AllocateCommandBuffers(VkRenderContext *rc, VkCommandPool comma
 
     for (u32 i = 0; i < rc->imageCount; i++)
     {
-        VkCommandBufferBeginInfo beginInfo;
+        VkCommandBufferBeginInfo beginInfo = {0};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 
