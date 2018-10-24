@@ -15,18 +15,25 @@
 
 #define VERT_SHADER_LOC "shaders/basic-shader.vert.spv"
 #define FRAG_SHADER_LOC "shaders/basic-shader.frag.spv"
+#define MAX_CONCURRENT_FRAMES 2
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
 typedef struct Semaphores
 {
-    VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
+    VkSemaphore *imageAvailableSemaphores;
+    VkSemaphore *renderFinishedSemaphores;
+    VkFence *fences;
+    u32 count;
 } Semaphores;
 
 local bool ApplicationDrawImage(VkRenderContext *rc, VkCommandBuffer *commandBuffers,
-                                VkSemaphore imageSemaphore, VkSemaphore renderSemaphore)
+                                VkSemaphore imageSemaphore, VkSemaphore renderSemaphore,
+                                VkFence fence)
 {
+
+    vkWaitForFences(rc->dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(rc->dev, 1, &fence);
     u32 imageIndex;
     vkAcquireNextImageKHR(rc->dev, rc->swapchain, UINT64_MAX, imageSemaphore, NULL, &imageIndex);
 
@@ -44,7 +51,7 @@ local bool ApplicationDrawImage(VkRenderContext *rc, VkCommandBuffer *commandBuf
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &renderSemaphore;
 
-    if (vkQueueSubmit(rc->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+    if (vkQueueSubmit(rc->graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS)
     {
         return false;
     }
@@ -63,20 +70,39 @@ local bool ApplicationDrawImage(VkRenderContext *rc, VkCommandBuffer *commandBuf
     return true;
 }
 
-local bool ApplicationCreateSemaphores(VkRenderContext *rc, Semaphores *out)
+local bool ApplicationCreateSemaphores(VkRenderContext *rc, Semaphores *out, u32 semaphoreCount)
 {
+
+    out->count = semaphoreCount;
+    out->imageAvailableSemaphores = malloc(sizeof(out->imageAvailableSemaphores[0]) * semaphoreCount);
+    out->renderFinishedSemaphores = malloc(sizeof(out->renderFinishedSemaphores[0]) * semaphoreCount);
+    out->fences = malloc(sizeof(out->fences[0]) * semaphoreCount);
+
     VkSemaphoreCreateInfo semaphoreInfo = {0};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    if (vkCreateSemaphore(rc->dev, &semaphoreInfo, NULL,
-                          &out->imageAvailableSemaphore) != VK_SUCCESS)
+
+    VkFenceCreateInfo fenceInfo = {0};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (u32 i = 0; i < semaphoreCount; i++)
     {
-        return false;
-    }
-    if (vkCreateSemaphore(rc->dev, &semaphoreInfo, NULL,
-                          &out->renderFinishedSemaphore) != VK_SUCCESS)
-    {
-        vkDestroySemaphore(rc->dev, out->imageAvailableSemaphore, NULL);
-        return false;
+        if (vkCreateSemaphore(rc->dev, &semaphoreInfo, NULL,
+                              &out->imageAvailableSemaphores[i]) != VK_SUCCESS)
+        {
+            return false;
+        }
+
+        if (vkCreateSemaphore(rc->dev, &semaphoreInfo, NULL,
+                              &out->renderFinishedSemaphores[i]) != VK_SUCCESS)
+        {
+            return false;
+        }
+
+        if (vkCreateFence(rc->dev, &fenceInfo, NULL, &out->fences[i]) != VK_SUCCESS)
+        {
+            return false;
+        }
     }
     return true;
 }
@@ -311,18 +337,20 @@ int main(int argc, char **argv)
     }
 
     Semaphores s;
-    if (!ApplicationCreateSemaphores(&rc, &s))
+    if (!ApplicationCreateSemaphores(&rc, &s, MAX_CONCURRENT_FRAMES))
     {
         puts("Could not get semaphores");
         goto errorSemaphores;
     }
-
+    u32 frameCount = 0;
     while (!glfwWindowShouldClose(win))
     {
+        u32 sindex = frameCount++ % s.count;
         glfwPollEvents();
         if (!ApplicationDrawImage(&rc, commandBuffers,
-                                  s.imageAvailableSemaphore,
-                                  s.renderFinishedSemaphore))
+                                  s.imageAvailableSemaphores[sindex],
+                                  s.renderFinishedSemaphores[sindex],
+                                  s.fences[sindex]))
         {
             break;
         }
@@ -334,8 +362,15 @@ int main(int argc, char **argv)
 
     vkDeviceWaitIdle(rc.dev);
     /* Cleanup */
-    vkDestroySemaphore(rc.dev, s.renderFinishedSemaphore, NULL);
-    vkDestroySemaphore(rc.dev, s.imageAvailableSemaphore, NULL);
+    for (u32 i = 0; i < s.count; i++)
+    {
+        vkDestroySemaphore(rc.dev, s.renderFinishedSemaphores[i], NULL);
+        vkDestroySemaphore(rc.dev, s.imageAvailableSemaphores[i], NULL);
+        vkDestroyFence(rc.dev, s.fences[i], NULL);
+    }
+    free(s.imageAvailableSemaphores);
+    free(s.renderFinishedSemaphores);
+    free(s.fences);
 errorSemaphores:
     free(commandBuffers);
 errorCommandBuffers:
