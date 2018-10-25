@@ -15,14 +15,19 @@ typedef struct VkRenderContext
     VkDevice dev;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
+    VkQueueIndices indices;
+} VkRenderContext;
+
+typedef struct VkSwapchainData
+{
     VkSwapchainKHR swapchain;
     u32 imageCount;
     VkImage *images;
     VkImageView *imageViews;
     VkExtent2D e;
     VkSurfaceFormatKHR format;
-    VkQueueIndices indices;
-} VkRenderContext;
+
+} VkSwapchainData;
 
 typedef struct SwapChainSupportDetails
 {
@@ -56,26 +61,31 @@ void DeleteSwapChainSupportDetails(SwapChainSupportDetails details);
 errcode CreateVkRenderContext(VkPhysicalDevice physdev,
                               VkPhysicalDeviceFeatures *df,
                               VkSurfaceKHR surf,
-                              u32 width, u32 height,
                               VkRenderContext *outrc);
 
-void DestroyVkRenderContext(VkRenderContext rc);
+void DestroyVkRenderContext(VkRenderContext *rc);
 
 VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
                                     const void *shaderSource,
                                     usize shaderLen);
 
 VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
+                                  const VkSwapchainData *data,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
                                   VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
                                   VkPipelineLayout *layout);
 
-VkRenderPass CreateRenderPass(const VkRenderContext *rc);
+VkRenderPass CreateRenderPass(const VkRenderContext *rc, const VkSwapchainData *data);
 
-VkFramebuffer *CreateFrameBuffers(VkRenderContext *rc, VkRenderPass renderpass);
+VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainData *data, VkRenderPass renderpass);
 
 VkCommandPool CreateCommandPool(VkRenderContext *rc);
 
+errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
+                        VkSurfaceKHR surf, u32 windowWidth,
+                        u32 windowHeight, VkSwapchainData *out);
+
+void DestroySwapChainData(VkRenderContext *rc, VkSwapchainData *data);
 #endif

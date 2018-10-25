@@ -17,19 +17,29 @@
 #define FRAG_SHADER_LOC "shaders/basic-shader.frag.spv"
 #define MAX_CONCURRENT_FRAMES 2
 
+local bool resizeOccurred;
+
+typedef enum DrawResult
+{
+    NO_ERROR,
+    SWAP_CHAIN_OUT_OF_DATE,
+    NO_SUBMIT
+
+} DrawResult;
+
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
-local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkCommandPool commandPool,
-                                                      VkRenderPass renderpass, VkPipeline graphicsPipeline,
-                                                      VkFramebuffer *framebuffers)
+local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwapchainData *data,
+                                                      VkCommandPool commandPool, VkRenderPass renderpass,
+                                                      VkPipeline graphicsPipeline, VkFramebuffer *framebuffers)
 {
-    VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * rc->imageCount);
+    VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * data->imageCount);
 
     VkCommandBufferAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = rc->imageCount;
+    allocInfo.commandBufferCount = data->imageCount;
 
     if (vkAllocateCommandBuffers(rc->dev, &allocInfo, ret) != VK_SUCCESS)
     {
@@ -37,7 +47,7 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkCom
         return NULL;
     }
 
-    for (u32 i = 0; i < rc->imageCount; i++)
+    for (u32 i = 0; i < data->imageCount; i++)
     {
         VkCommandBufferBeginInfo beginInfo = {0};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -54,7 +64,7 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkCom
         renderPassInfo.renderPass = renderpass;
         renderPassInfo.framebuffer = framebuffers[i];
         renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
-        renderPassInfo.renderArea.extent = rc->e;
+        renderPassInfo.renderArea.extent = data->e;
 
         VkClearValue clearColor = {0, 0, 0, 1};
         renderPassInfo.clearValueCount = 1;
@@ -85,15 +95,19 @@ typedef struct Semaphores
     u32 count;
 } Semaphores;
 
-local bool ApplicationDrawImage(VkRenderContext *rc, VkCommandBuffer *commandBuffers,
-                                VkSemaphore imageSemaphore, VkSemaphore renderSemaphore,
-                                VkFence fence)
+local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data,
+                                      VkCommandBuffer *commandBuffers, VkSemaphore imageSemaphore,
+                                      VkSemaphore renderSemaphore, VkFence fence)
 {
 
     vkWaitForFences(rc->dev, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(rc->dev, 1, &fence);
+
     u32 imageIndex;
-    vkAcquireNextImageKHR(rc->dev, rc->swapchain, UINT64_MAX, imageSemaphore, NULL, &imageIndex);
+    VkResult result = vkAcquireNextImageKHR(rc->dev, data->swapchain, UINT64_MAX, imageSemaphore, NULL, &imageIndex);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        return SWAP_CHAIN_OUT_OF_DATE;
+    }
 
     VkSubmitInfo submitInfo = {0};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -108,10 +122,11 @@ local bool ApplicationDrawImage(VkRenderContext *rc, VkCommandBuffer *commandBuf
 
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &renderSemaphore;
+    vkResetFences(rc->dev, 1, &fence);
 
     if (vkQueueSubmit(rc->graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS)
     {
-        return false;
+        return NO_SUBMIT;
     }
 
     VkPresentInfoKHR presentInfo = {0};
@@ -120,12 +135,16 @@ local bool ApplicationDrawImage(VkRenderContext *rc, VkCommandBuffer *commandBuf
     presentInfo.pWaitSemaphores = &renderSemaphore;
 
     presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &rc->swapchain;
+    presentInfo.pSwapchains = &data->swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
-    vkQueuePresentKHR(rc->presentQueue, &presentInfo);
+    result = vkQueuePresentKHR(rc->presentQueue, &presentInfo);
 
-    return true;
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+    {
+        return SWAP_CHAIN_OUT_OF_DATE;
+    }
+    return NO_ERROR;
 }
 
 local bool ApplicationCreateSemaphores(VkRenderContext *rc, Semaphores *out, u32 semaphoreCount)
@@ -263,6 +282,67 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
     return false;
 }
 
+local void
+ApplicationDestroySwapchainAndRelatedData(VkRenderContext *rc, VkSwapchainData *data,
+                                          VkCommandPool cpool,
+                                          VkCommandBuffer *cbuffers,
+                                          VkFramebuffer *framebuffers,
+                                          VkPipeline pipeline, VkPipelineLayout layout,
+                                          VkRenderPass renderpass)
+{
+
+    for (u32 i = 0; i < data->imageCount; i++)
+    {
+        vkDestroyFramebuffer(rc->dev, framebuffers[i], NULL);
+    }
+    free(framebuffers);
+
+    vkFreeCommandBuffers(rc->dev, cpool, data->imageCount, cbuffers);
+    free(cbuffers);
+
+    vkDestroyPipeline(rc->dev, pipeline, NULL);
+    vkDestroyPipelineLayout(rc->dev, layout, NULL);
+
+    vkDestroyRenderPass(rc->dev, renderpass, NULL);
+
+    DestroySwapChainData(rc, data);
+}
+local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *data, GLFWwindow *win,
+                                        VkPhysicalDevice physdev, VkSurfaceKHR surf,
+                                        VkCommandPool cpool,
+                                        VkShaderModule vertShader, VkShaderModule fragShader,
+                                        VkPipelineVertexInputStateCreateInfo *inputInfo,
+                                        VkCommandBuffer **cbuffers,
+                                        VkFramebuffer **framebuffers,
+                                        VkPipeline *pipeline, VkPipelineLayout *layout,
+                                        VkRenderPass *renderpass)
+
+{
+    vkDeviceWaitIdle(rc->dev);
+    ApplicationDestroySwapchainAndRelatedData(rc, data, cpool, *cbuffers,
+                                              *framebuffers, *pipeline, *layout,
+                                              *renderpass);
+    int wwidth, wheight;
+    glfwGetWindowSize(win, &wwidth, &wheight);
+    if (CreateSwapchain(rc, physdev, surf, wwidth, wheight, data) != ERROR_SUCCESS)
+    {
+        return false;
+    }
+    *renderpass = CreateRenderPass(rc, data);
+    *pipeline = CreateGraphicsPipeline(rc, data, vertShader, fragShader, *renderpass, inputInfo, layout);
+    *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
+    *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
+                                               *renderpass, *pipeline,
+                                               *framebuffers);
+
+    return true;
+}
+
+static void ResizeCallback(GLFWwindow *win, int width, int height)
+{
+    resizeOccurred = true;
+}
+
 int main(int argc, char **argv)
 {
     int returnValue = ERROR_SUCCESS;
@@ -270,15 +350,15 @@ int main(int argc, char **argv)
 
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
     GLFWwindow *win = glfwCreateWindow(WIDTH, HEIGHT, "vulkan", NULL, NULL);
     if (win == NULL)
     {
         puts("ERROR! Could not create window");
         returnValue = ERROR_INITIALIZATION_FAILURE;
-        goto errorNoWin;
+        return returnValue;
     }
+    glfwSetFramebufferSizeCallback(win, ResizeCallback);
 
     VkInstance instance;
     if (glfwCreateVkInstance(&instance, "Vulkan tutorial",
@@ -288,7 +368,7 @@ int main(int argc, char **argv)
     {
         puts("ERROR! could not create instance");
         returnValue = ERROR_INITIALIZATION_FAILURE;
-        goto errorNoInstance;
+        return returnValue;
     }
 
     VkSurfaceKHR surf;
@@ -296,7 +376,7 @@ int main(int argc, char **argv)
     {
         puts("NOT ABLE TO CREATE SURFACE");
         returnValue = ERROR_INITIALIZATION_FAILURE;
-        goto errorNoSurf;
+        return returnValue;
     }
 
     const char *extensionList[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -308,17 +388,28 @@ int main(int argc, char **argv)
     {
         puts("NO SUITABLE DEVICE");
         returnValue = ERROR_INITIALIZATION_FAILURE;
-        goto errorNoContext;
+        return returnValue;
     }
 
     VkPhysicalDeviceFeatures features = {0};
     VkRenderContext rc;
     if (CreateVkRenderContext(physdev, &features, surf,
-                              WIDTH, HEIGHT, &rc) != ERROR_SUCCESS)
+                              &rc) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE DEVICE");
         returnValue = ERROR_INITIALIZATION_FAILURE;
-        goto errorNoContext;
+        return returnValue;
+    }
+
+    int wwidth, wheight;
+    glfwGetWindowSize(win, &wwidth, &wheight);
+
+    VkSwapchainData data = {0};
+    if (CreateSwapchain(&rc, physdev, surf, wwidth, wheight, &data) != ERROR_SUCCESS)
+    {
+        puts("NOT ABLE TO CREATE SWAPCHAIN");
+        returnValue = ERROR_INITIALIZATION_FAILURE;
+        return returnValue;
     }
 
     isize vertShaderSize;
@@ -349,12 +440,12 @@ int main(int argc, char **argv)
     }
     UnmapMappedBuffer(fragShaderCode, fragShaderSize);
 
-    VkRenderPass renderpass = CreateRenderPass(&rc);
+    VkRenderPass renderpass = CreateRenderPass(&rc, &data);
     if (renderpass == VK_NULL_HANDLE)
     {
         returnValue = ERROR_INITIALIZATION_FAILURE;
         puts("Could not create render pa");
-        goto errorRenderPass;
+        return returnValue;
     }
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {0};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -362,61 +453,63 @@ int main(int argc, char **argv)
     vertexInputInfo.vertexBindingDescriptionCount = 0;
 
     VkPipelineLayout layout;
-    VkPipeline pipeline = CreateGraphicsPipeline(&rc, vertShader,
-                                                 fragShader, renderpass,
-                                                 &vertexInputInfo,
+    VkPipeline pipeline = CreateGraphicsPipeline(&rc, &data,
+                                                 vertShader, fragShader,
+                                                 renderpass, &vertexInputInfo,
                                                  &layout);
     if (pipeline == VK_NULL_HANDLE)
     {
         puts("Could not create graphics pipeline");
         returnValue = ERROR_INITIALIZATION_FAILURE;
-        goto errorPipeline;
+        return returnValue;
     }
 
-    vkDestroyShaderModule(rc.dev, vertShader, NULL);
-    vkDestroyShaderModule(rc.dev, fragShader, NULL);
-
-    VkFramebuffer *framebuffers = CreateFrameBuffers(&rc, renderpass);
+    VkFramebuffer *framebuffers = CreateFrameBuffers(&rc, &data, renderpass);
     if (framebuffers == NULL)
     {
         puts("Could not create framebuffer");
-        goto errorFramebuffers;
+        return returnValue;
     }
 
     VkCommandPool commandPool = CreateCommandPool(&rc);
-    if (framebuffers == VK_NULL_HANDLE)
+    if (commandPool == VK_NULL_HANDLE)
     {
         puts("Could not create command pool");
-        goto errorCommandPool;
+        return returnValue;
     }
 
-    VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, commandPool,
+    VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, &data, commandPool,
                                                                      renderpass, pipeline,
                                                                      framebuffers);
 
     if (commandBuffers == NULL)
     {
         puts("Could not properly set up command buffers");
-        goto errorCommandBuffers;
+        return returnValue;
     }
 
     Semaphores s;
     if (!ApplicationCreateSemaphores(&rc, &s, MAX_CONCURRENT_FRAMES))
     {
         puts("Could not get semaphores");
-        goto errorSemaphores;
+        return returnValue;
     }
     u32 frameCount = 0;
     while (!glfwWindowShouldClose(win))
     {
         u32 sindex = frameCount++ % s.count;
         glfwPollEvents();
-        if (!ApplicationDrawImage(&rc, commandBuffers,
-                                  s.imageAvailableSemaphores[sindex],
-                                  s.renderFinishedSemaphores[sindex],
-                                  s.fences[sindex]))
+        DrawResult result = ApplicationDrawImage(&rc, &data, commandBuffers,
+                                                 s.imageAvailableSemaphores[sindex],
+                                                 s.renderFinishedSemaphores[sindex],
+                                                 s.fences[sindex]);
+        if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
-            break;
+            ApplicationRecreateSwapchain(&rc, &data, win, physdev, surf,
+                                         commandPool, vertShader, fragShader,
+                                         &vertexInputInfo, &commandBuffers,
+                                         &framebuffers, &pipeline, &layout,
+                                         &renderpass);
         }
     }
 
@@ -426,6 +519,10 @@ int main(int argc, char **argv)
 
     vkDeviceWaitIdle(rc.dev);
     /* Cleanup */
+
+    vkDestroyShaderModule(rc.dev, vertShader, NULL);
+    vkDestroyShaderModule(rc.dev, fragShader, NULL);
+
     for (u32 i = 0; i < s.count; i++)
     {
         vkDestroySemaphore(rc.dev, s.renderFinishedSemaphores[i], NULL);
@@ -435,32 +532,21 @@ int main(int argc, char **argv)
     free(s.imageAvailableSemaphores);
     free(s.renderFinishedSemaphores);
     free(s.fences);
-errorSemaphores:
-    free(commandBuffers);
-errorCommandBuffers:
+
+    ApplicationDestroySwapchainAndRelatedData(&rc, &data, commandPool, commandBuffers,
+                                              framebuffers, pipeline, layout,
+                                              renderpass);
+
     vkDestroyCommandPool(rc.dev, commandPool, NULL);
 
-errorCommandPool:
-    for (u32 i = 0; i < rc.imageCount; i++)
-    {
-        vkDestroyFramebuffer(rc.dev, framebuffers[i], NULL);
-    }
-    free(framebuffers);
+    DestroyVkRenderContext(&rc);
 
-errorFramebuffers:
-    vkDestroyPipeline(rc.dev, pipeline, NULL);
-    vkDestroyPipelineLayout(rc.dev, layout, NULL);
-errorPipeline:
-    vkDestroyRenderPass(rc.dev, renderpass, NULL);
-errorRenderPass:
-    DestroyVkRenderContext(rc);
-errorNoContext:
     vkDestroySurfaceKHR(instance, surf, NULL);
-errorNoSurf:
+
     vkDestroyInstance(instance, NULL);
-errorNoInstance:
+
     glfwDestroyWindow(win);
-errorNoWin:
+
     glfwTerminate();
 
     return returnValue;

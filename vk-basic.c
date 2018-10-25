@@ -125,10 +125,24 @@ void DeleteSwapChainSupportDetails(SwapChainSupportDetails details)
     free(details.presentModes);
 }
 
+local VkExtent2D SelectSwapExtent(SwapChainSupportDetails *details, u32 windowWidth, u32 windowHeight)
+{
+    VkExtent2D ret;
+    if (details->capabilities.currentExtent.width != UINT32_MAX)
+    {
+        ret = details->capabilities.currentExtent;
+    }
+    else
+    {
+        ret.width = windowWidth;
+        ret.height = windowHeight;
+    }
+    return ret;
+}
+
 errcode CreateVkRenderContext(VkPhysicalDevice physdev,
                               VkPhysicalDeviceFeatures *df,
                               VkSurfaceKHR surf,
-                              u32 width, u32 height,
                               VkRenderContext *outrc)
 {
     VkRenderContext rc = {0};
@@ -176,6 +190,20 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
     {
         rc.presentQueue = rc.graphicsQueue;
     }
+
+    rc.indices = qi;
+
+    *outrc = rc;
+
+    return ERROR_SUCCESS;
+}
+
+errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
+                        VkSurfaceKHR surf, u32 windowWidth,
+                        u32 windowHeight, VkSwapchainData *out)
+
+{
+
     SwapChainSupportDetails d = QuerySwapChainSupport(physdev, surf);
     VkSurfaceFormatKHR form = {0};
     if (d.formatCount == 1 && d.formats[0].format == VK_FORMAT_UNDEFINED)
@@ -215,18 +243,7 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
         }
     }
 
-    VkExtent2D e = {0};
-    if (d.capabilities.currentExtent.width != UINT32_MAX)
-    {
-        e = d.capabilities.currentExtent;
-    }
-    else
-    {
-        e = (VkExtent2D){MAX_VAL(MIN_VAL(width, d.capabilities.minImageExtent.width),
-                                 d.capabilities.maxImageExtent.width),
-                         MAX_VAL(MIN_VAL(height, d.capabilities.minImageExtent.width),
-                                 d.capabilities.currentExtent.height)};
-    }
+    VkExtent2D e = SelectSwapExtent(&d, windowWidth, windowHeight);
 
     u32 imageCount = d.capabilities.minImageCount + 1;
     if (d.capabilities.maxImageCount > 0 && imageCount > d.capabilities.maxImageCount)
@@ -243,9 +260,9 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
     ci.imageExtent = e;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    u32 queueFamilyIndices[2] = {qi.graphicsIndex, qi.presentIndex};
+    u32 queueFamilyIndices[2] = {rc->indices.graphicsIndex, rc->indices.presentIndex};
 
-    if (qi.graphicsIndex == qi.presentIndex)
+    if (rc->indices.graphicsIndex == rc->indices.presentIndex)
     {
         ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ci.queueFamilyIndexCount = 0;
@@ -264,23 +281,22 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = VK_NULL_HANDLE;
 
-    if (vkCreateSwapchainKHR(rc.dev, &ci, NULL, &rc.swapchain) != VK_SUCCESS)
+    if (vkCreateSwapchainKHR(rc->dev, &ci, NULL, &out->swapchain) != VK_SUCCESS)
     {
-        vkDestroyDevice(rc.dev, NULL);
         return ERROR_EXTERNAL_LIB;
     }
 
-    vkGetSwapchainImagesKHR(rc.dev, rc.swapchain, &imageCount, NULL);
-    rc.images = malloc(sizeof(rc.images) * imageCount);
-    vkGetSwapchainImagesKHR(rc.dev, rc.swapchain, &imageCount, rc.images);
-    rc.imageCount = imageCount;
+    vkGetSwapchainImagesKHR(rc->dev, out->swapchain, &imageCount, NULL);
+    out->images = malloc(sizeof(out->images[0]) * imageCount);
+    vkGetSwapchainImagesKHR(rc->dev, out->swapchain, &imageCount, out->images);
+    out->imageCount = imageCount;
 
-    rc.imageViews = malloc(sizeof(rc.imageViews[0]) * rc.imageCount);
-    for (u32 i = 0; i < rc.imageCount; i++)
+    out->imageViews = malloc(sizeof(out->imageViews[0]) * out->imageCount);
+    for (u32 i = 0; i < out->imageCount; i++)
     {
         VkImageViewCreateInfo ivci = {0};
         ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        ivci.image = rc.images[i];
+        ivci.image = out->images[i];
         ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         ivci.format = ci.imageFormat;
         ivci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -292,35 +308,34 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
         ivci.subresourceRange.levelCount = 1;
         ivci.subresourceRange.baseArrayLayer = 0;
         ivci.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(rc.dev, &ivci, NULL, &rc.imageViews[i]) != VK_SUCCESS)
+        if (vkCreateImageView(rc->dev, &ivci, NULL, &out->imageViews[i]) != VK_SUCCESS)
         {
-            vkDestroyDevice(rc.dev, NULL);
-            free(rc.images);
-            free(rc.imageViews);
+            free(out->images);
+            free(out->imageViews);
             return ERROR_EXTERNAL_LIB;
         }
     }
-    rc.e = e;
-    rc.format = form;
-    rc.indices = qi;
+    out->e = e;
+    out->format = form;
 
     DeleteSwapChainSupportDetails(d);
-
-    *outrc = rc;
-
     return ERROR_SUCCESS;
 }
 
-void DestroyVkRenderContext(VkRenderContext rc)
+void DestroySwapChainData(VkRenderContext *rc, VkSwapchainData *data)
 {
-    for (u32 i = 0; i < rc.imageCount; i++)
+    for (u32 i = 0; i < data->imageCount; i++)
     {
-        vkDestroyImageView(rc.dev, rc.imageViews[i], NULL);
+        vkDestroyImageView(rc->dev, data->imageViews[i], NULL);
     }
-    free(rc.imageViews);
-    free(rc.images);
-    vkDestroySwapchainKHR(rc.dev, rc.swapchain, NULL);
-    vkDestroyDevice(rc.dev, NULL);
+    free(data->imageViews);
+    free(data->images);
+    vkDestroySwapchainKHR(rc->dev, data->swapchain, NULL);
+}
+
+void DestroyVkRenderContext(VkRenderContext *rc)
+{
+    vkDestroyDevice(rc->dev, NULL);
 }
 
 VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
@@ -341,6 +356,7 @@ VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
 }
 
 VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
+                                  const VkSwapchainData *data,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
@@ -369,14 +385,14 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
     VkViewport viewport = {0};
     viewport.x = 0;
     viewport.y = 0;
-    viewport.width = (float)rc->e.width;
-    viewport.height = (float)rc->e.height;
+    viewport.width = (float)data->e.width;
+    viewport.height = (float)data->e.height;
     viewport.minDepth = 0;
     viewport.maxDepth = 1;
 
     VkRect2D scissor = {0};
     scissor.offset = (VkOffset2D){0, 0};
-    scissor.extent = rc->e;
+    scissor.extent = data->e;
 
     VkPipelineViewportStateCreateInfo vps = {0};
     vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -459,10 +475,10 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
     return graphicsPipeline;
 }
 
-VkRenderPass CreateRenderPass(const VkRenderContext *rc)
+VkRenderPass CreateRenderPass(const VkRenderContext *rc, const VkSwapchainData *data)
 {
     VkAttachmentDescription colorAttachment = {0};
-    colorAttachment.format = rc->format.format;
+    colorAttachment.format = data->format.format;
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -508,20 +524,20 @@ VkRenderPass CreateRenderPass(const VkRenderContext *rc)
     return renderPass;
 }
 
-VkFramebuffer *CreateFrameBuffers(VkRenderContext *rc, VkRenderPass renderpass)
+VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainData *data, VkRenderPass renderpass)
 {
-    VkFramebuffer *ret = malloc(sizeof(ret[0]) * rc->imageCount);
-    for (u32 i = 0; i < rc->imageCount; i++)
+    VkFramebuffer *ret = malloc(sizeof(ret[0]) * data->imageCount);
+    for (u32 i = 0; i < data->imageCount; i++)
     {
-        VkImageView attachment = rc->imageViews[i];
+        VkImageView attachment = data->imageViews[i];
 
         VkFramebufferCreateInfo fbci = {0};
         fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fbci.renderPass = renderpass;
         fbci.attachmentCount = 1;
         fbci.pAttachments = &attachment;
-        fbci.width = rc->e.width;
-        fbci.height = rc->e.height;
+        fbci.width = data->e.width;
+        fbci.height = data->e.height;
         fbci.layers = 1;
 
         if (vkCreateFramebuffer(rc->dev, &fbci, NULL, &ret[i]) != VK_SUCCESS)
