@@ -19,6 +19,64 @@
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
+local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkCommandPool commandPool,
+                                                      VkRenderPass renderpass, VkPipeline graphicsPipeline,
+                                                      VkFramebuffer *framebuffers)
+{
+    VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * rc->imageCount);
+
+    VkCommandBufferAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = rc->imageCount;
+
+    if (vkAllocateCommandBuffers(rc->dev, &allocInfo, ret) != VK_SUCCESS)
+    {
+        free(ret);
+        return NULL;
+    }
+
+    for (u32 i = 0; i < rc->imageCount; i++)
+    {
+        VkCommandBufferBeginInfo beginInfo = {0};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+
+        if (vkBeginCommandBuffer(ret[i], &beginInfo) != VK_SUCCESS)
+        {
+            free(ret);
+            return NULL;
+        }
+
+        VkRenderPassBeginInfo renderPassInfo = {0};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = renderpass;
+        renderPassInfo.framebuffer = framebuffers[i];
+        renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
+        renderPassInfo.renderArea.extent = rc->e;
+
+        VkClearValue clearColor = {0, 0, 0, 1};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(ret[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        {
+            vkCmdBindPipeline(ret[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdDraw(ret[i], 3, 1, 0, 0);
+        }
+        vkCmdEndRenderPass(ret[i]);
+
+        if (vkEndCommandBuffer(ret[i]) != VK_SUCCESS)
+        {
+            free(ret);
+            return NULL;
+        }
+    }
+
+    return ret;
+}
+
 typedef struct Semaphores
 {
     VkSemaphore *imageAvailableSemaphores;
@@ -298,9 +356,15 @@ int main(int argc, char **argv)
         puts("Could not create render pa");
         goto errorRenderPass;
     }
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {0};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+    vertexInputInfo.vertexBindingDescriptionCount = 0;
+
     VkPipelineLayout layout;
     VkPipeline pipeline = CreateGraphicsPipeline(&rc, vertShader,
                                                  fragShader, renderpass,
+                                                 &vertexInputInfo,
                                                  &layout);
     if (pipeline == VK_NULL_HANDLE)
     {
@@ -326,9 +390,9 @@ int main(int argc, char **argv)
         goto errorCommandPool;
     }
 
-    VkCommandBuffer *commandBuffers = AllocateCommandBuffers(&rc, commandPool,
-                                                             renderpass, pipeline,
-                                                             framebuffers);
+    VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, commandPool,
+                                                                     renderpass, pipeline,
+                                                                     framebuffers);
 
     if (commandBuffers == NULL)
     {

@@ -69,6 +69,7 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
+                                  VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
                                   VkPipelineLayout *layout);
 
 VkRenderPass CreateRenderPass(const VkRenderContext *rc);
@@ -77,7 +78,4 @@ VkFramebuffer *CreateFrameBuffers(VkRenderContext *rc, VkRenderPass renderpass);
 
 VkCommandPool CreateCommandPool(VkRenderContext *rc);
 
-VkCommandBuffer *AllocateCommandBuffers(VkRenderContext *rc, VkCommandPool commandPool,
-                                        VkRenderPass renderpass, VkPipeline graphicsPipeline,
-                                        VkFramebuffer *framebuffers);
 #endif
