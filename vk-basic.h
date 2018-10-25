@@ -2,6 +2,7 @@
 #define VK_BASIC_H
 
 #include "rutils/def.h"
+#include <string.h>
 #include <vulkan/vulkan.h>
 
 typedef struct VkQueueIndices
@@ -37,6 +38,12 @@ typedef struct SwapChainSupportDetails
     u32 modeCount;
     VkPresentModeKHR *presentModes;
 } SwapChainSupportDetails;
+
+typedef struct GPUBufferData
+{
+    VkBuffer buffer;
+    VkDeviceMemory deviceMemory;
+} GPUBufferData;
 
 typedef int (*SuitableDeviceCheck)(VkPhysicalDevice dev,
                                    VkSurfaceKHR surf,
@@ -88,4 +95,17 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
                         u32 windowHeight, VkSwapchainData *out);
 
 void DestroySwapChainData(VkRenderContext *rc, VkSwapchainData *data);
+
+VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
+                             size_t vertexBufferSize, GPUBufferData *buffer);
+void DestroyGPUBufferInfo(VkRenderContext *rc, GPUBufferData *buffer);
+
+local void OutputDataToBuffer(VkRenderContext *rc, GPUBufferData *buffer, void *data, size_t dataLen, size_t offset)
+{
+    void *bufp;
+    vkMapMemory(rc->dev, buffer->deviceMemory, offset, dataLen, 0, &bufp);
+    memcpy(bufp, data, dataLen);
+    vkUnmapMemory(rc->dev, buffer->deviceMemory);
+}
+
 #endif

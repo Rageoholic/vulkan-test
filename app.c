@@ -24,14 +24,26 @@ typedef enum DrawResult
     NO_ERROR,
     SWAP_CHAIN_OUT_OF_DATE,
     NO_SUBMIT
-
 } DrawResult;
+
+typedef struct Vertex
+{
+    Vec2f pos;
+    Vec3f color;
+} Vertex;
+
+local Vertex vertices[] = {
+
+    {{0.0, -0.5}, {1, 0, 0}},
+    {{0.5, 0.5}, {0, 1, 0}},
+    {{-0.5, 0.5}, {0, 0, 1}}};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
 local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwapchainData *data,
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
-                                                      VkPipeline graphicsPipeline, VkFramebuffer *framebuffers)
+                                                      VkPipeline graphicsPipeline, VkFramebuffer *framebuffers,
+                                                      GPUBufferData *vertexBuffer, VkDeviceSize *offsets)
 {
     VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * data->imageCount);
 
@@ -73,6 +85,8 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
         vkCmdBeginRenderPass(ret[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         {
             vkCmdBindPipeline(ret[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindVertexBuffers(ret[i], 0, 1, &vertexBuffer->buffer, offsets);
+            vkCmdBindVertexBuffers(ret[i], 0, 1, &vertexBuffer->buffer, offsets);
             vkCmdDraw(ret[i], 3, 1, 0, 0);
         }
         vkCmdEndRenderPass(ret[i]);
@@ -308,8 +322,8 @@ ApplicationDestroySwapchainAndRelatedData(VkRenderContext *rc, VkSwapchainData *
     DestroySwapChainData(rc, data);
 }
 local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *data, GLFWwindow *win,
-                                        VkPhysicalDevice physdev, VkSurfaceKHR surf,
-                                        VkCommandPool cpool,
+                                        VkPhysicalDevice physdev, VkSurfaceKHR surf, GPUBufferData *vertexBuffers,
+                                        VkDeviceSize *offsets, VkCommandPool cpool,
                                         VkShaderModule vertShader, VkShaderModule fragShader,
                                         VkPipelineVertexInputStateCreateInfo *inputInfo,
                                         VkCommandBuffer **cbuffers,
@@ -333,14 +347,73 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
     *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
-                                               *framebuffers);
+                                               *framebuffers, vertexBuffers, offsets);
 
     return true;
 }
 
+static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT *callbackData,
+    void *userData)
+{
+    ignore messageSeverity;
+    ignore messageType;
+    ignore userData;
+    if (!streq(callbackData->pMessage, "Added messenger"))
+    {
+        fprintf(stderr, "validation layer: %s\n", callbackData->pMessage);
+    }
+    return VK_FALSE;
+}
+static VkResult CreateDebugUtilsMessenger(VkInstance instance,
+                                          const VkDebugUtilsMessengerCreateInfoEXT *createInfo,
+                                          VkDebugUtilsMessengerEXT *callback)
+{
+    PFN_vkCreateDebugUtilsMessengerEXT func = (PFN_vkCreateDebugUtilsMessengerEXT)
+        vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != NULL)
+    {
+        return func(instance, createInfo, NULL, callback);
+    }
+    else
+    {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+
+static VkResult ApplicationSetupDebugCallback(VkInstance instance,
+                                              VkDebugUtilsMessengerEXT *callback)
+{
+    VkDebugUtilsMessengerCreateInfoEXT createInfo = {0};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.pfnUserCallback = DebugCallback;
+
+    return CreateDebugUtilsMessenger(instance, &createInfo, callback);
+}
+
 static void ResizeCallback(GLFWwindow *win, int width, int height)
 {
+    ignore win;
+    ignore width;
+    ignore height;
     resizeOccurred = true;
+}
+
+static void DestroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT callback)
+{
+    PFN_vkDestroyDebugUtilsMessengerEXT func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != NULL)
+    {
+        func(instance, callback, NULL);
+    }
 }
 
 int main(int argc, char **argv)
@@ -370,7 +443,9 @@ int main(int argc, char **argv)
         returnValue = ERROR_INITIALIZATION_FAILURE;
         return returnValue;
     }
+    VkDebugUtilsMessengerEXT callback = VK_NULL_HANDLE;
 
+    ApplicationSetupDebugCallback(instance, &callback);
     VkSurfaceKHR surf;
     if (glfwCreateWindowSurface(instance, win, NULL, &surf) != VK_SUCCESS)
     {
@@ -404,8 +479,8 @@ int main(int argc, char **argv)
     int wwidth, wheight;
     glfwGetWindowSize(win, &wwidth, &wheight);
 
-    VkSwapchainData data = {0};
-    if (CreateSwapchain(&rc, physdev, surf, wwidth, wheight, &data) != ERROR_SUCCESS)
+    VkSwapchainData swapchainData = {0};
+    if (CreateSwapchain(&rc, physdev, surf, wwidth, wheight, &swapchainData) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE SWAPCHAIN");
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -440,20 +515,39 @@ int main(int argc, char **argv)
     }
     UnmapMappedBuffer(fragShaderCode, fragShaderSize);
 
-    VkRenderPass renderpass = CreateRenderPass(&rc, &data);
+    VkRenderPass renderpass = CreateRenderPass(&rc, &swapchainData);
     if (renderpass == VK_NULL_HANDLE)
     {
         returnValue = ERROR_INITIALIZATION_FAILURE;
         puts("Could not create render pa");
         return returnValue;
     }
+
+    VkVertexInputBindingDescription bindingDescription = {0};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(Vertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attributeDescription[2] = {0};
+
+    attributeDescription[0].binding = 0;
+    attributeDescription[0].location = 0;
+    attributeDescription[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescription[0].offset = offsetof(Vertex, pos);
+
+    attributeDescription[1].binding = 0;
+    attributeDescription[1].location = 1;
+    attributeDescription[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescription[1].offset = offsetof(Vertex, color);
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {0};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
+    vertexInputInfo.vertexAttributeDescriptionCount = countof(attributeDescription);
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescription;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
 
     VkPipelineLayout layout;
-    VkPipeline pipeline = CreateGraphicsPipeline(&rc, &data,
+    VkPipeline pipeline = CreateGraphicsPipeline(&rc, &swapchainData,
                                                  vertShader, fragShader,
                                                  renderpass, &vertexInputInfo,
                                                  &layout);
@@ -464,7 +558,7 @@ int main(int argc, char **argv)
         return returnValue;
     }
 
-    VkFramebuffer *framebuffers = CreateFrameBuffers(&rc, &data, renderpass);
+    VkFramebuffer *framebuffers = CreateFrameBuffers(&rc, &swapchainData, renderpass);
     if (framebuffers == NULL)
     {
         puts("Could not create framebuffer");
@@ -478,15 +572,27 @@ int main(int argc, char **argv)
         return returnValue;
     }
 
-    VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, &data, commandPool,
+    GPUBufferData vertexBuffer;
+
+    if (CreateGPUBufferData(&rc, physdev, sizeof(vertices), &vertexBuffer) != VK_SUCCESS)
+    {
+        puts("Could not set up vertex buffer");
+        return 1;
+    }
+
+    VkDeviceSize offsets[1] = {0};
+
+    VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, &swapchainData, commandPool,
                                                                      renderpass, pipeline,
-                                                                     framebuffers);
+                                                                     framebuffers,
+                                                                     &vertexBuffer, offsets);
 
     if (commandBuffers == NULL)
     {
         puts("Could not properly set up command buffers");
         return returnValue;
     }
+    OutputDataToBuffer(&rc, &vertexBuffer, vertices, sizeof(vertices), 0);
 
     Semaphores s;
     if (!ApplicationCreateSemaphores(&rc, &s, MAX_CONCURRENT_FRAMES))
@@ -499,13 +605,14 @@ int main(int argc, char **argv)
     {
         u32 sindex = frameCount++ % s.count;
         glfwPollEvents();
-        DrawResult result = ApplicationDrawImage(&rc, &data, commandBuffers,
+        DrawResult result = ApplicationDrawImage(&rc, &swapchainData, commandBuffers,
                                                  s.imageAvailableSemaphores[sindex],
                                                  s.renderFinishedSemaphores[sindex],
                                                  s.fences[sindex]);
         if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
-            ApplicationRecreateSwapchain(&rc, &data, win, physdev, surf,
+            ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,
+                                         &vertexBuffer, offsets,
                                          commandPool, vertShader, fragShader,
                                          &vertexInputInfo, &commandBuffers,
                                          &framebuffers, &pipeline, &layout,
@@ -533,15 +640,21 @@ int main(int argc, char **argv)
     free(s.renderFinishedSemaphores);
     free(s.fences);
 
-    ApplicationDestroySwapchainAndRelatedData(&rc, &data, commandPool, commandBuffers,
+    ApplicationDestroySwapchainAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
                                               framebuffers, pipeline, layout,
                                               renderpass);
+
+    DestroyGPUBufferInfo(&rc, &vertexBuffer);
 
     vkDestroyCommandPool(rc.dev, commandPool, NULL);
 
     DestroyVkRenderContext(&rc);
 
     vkDestroySurfaceKHR(instance, surf, NULL);
+    if (callback != VK_NULL_HANDLE)
+    {
+        DestroyDebugUtilsMessenger(instance, callback);
+    }
 
     vkDestroyInstance(instance, NULL);
 

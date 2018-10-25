@@ -563,3 +563,69 @@ VkCommandPool CreateCommandPool(VkRenderContext *rc)
     }
     return ret;
 }
+
+local bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
+                          VkMemoryPropertyFlags properties, u32 *out)
+{
+    VkPhysicalDeviceMemoryProperties memproperties;
+
+    vkGetPhysicalDeviceMemoryProperties(physdev, &memproperties);
+    for (u32 i = 0; i < memproperties.memoryTypeCount; i++)
+    {
+        if (typefilter & (i << i) && memproperties.memoryTypes[i].propertyFlags & properties)
+        {
+            *out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
+                             size_t vertexBufferSize, GPUBufferData *buffer)
+{
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkBufferCreateInfo bufferInfo = {0};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = vertexBufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(rc->dev, &bufferInfo, NULL, &vertexBuffer) != VK_SUCCESS)
+    {
+
+        return ERROR_EXTERNAL_LIB;
+    }
+
+    VkMemoryRequirements memReq = {0};
+    vkGetBufferMemoryRequirements(rc->dev, vertexBuffer, &memReq);
+
+    VkMemoryAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    if (!FindMemoryType(physdev, memReq.memoryTypeBits,
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                        &allocInfo.memoryTypeIndex))
+    {
+
+        return -1;
+    }
+
+    VkDeviceMemory vertexBufferMem;
+    if (vkAllocateMemory(rc->dev, &allocInfo, NULL, &vertexBufferMem) != VK_SUCCESS)
+    {
+
+        return -1;
+    }
+
+    vkBindBufferMemory(rc->dev, vertexBuffer, vertexBufferMem, 0);
+    *buffer = (GPUBufferData){vertexBuffer, vertexBufferMem};
+    return VK_SUCCESS;
+}
+
+void DestroyGPUBufferInfo(VkRenderContext *rc, GPUBufferData *buffer)
+{
+    vkDestroyBuffer(rc->dev, buffer->buffer, NULL);
+    vkFreeMemory(rc->dev, buffer->deviceMemory, NULL);
+}
