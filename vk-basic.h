@@ -97,7 +97,10 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
 void DestroySwapChainData(VkRenderContext *rc, VkSwapchainData *data);
 
 VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
-                             size_t vertexBufferSize, GPUBufferData *buffer);
+                             size_t vertexBufferSize,
+                             VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                             GPUBufferData *buffer);
+
 void DestroyGPUBufferInfo(VkRenderContext *rc, GPUBufferData *buffer);
 
 local void OutputDataToBuffer(VkRenderContext *rc, GPUBufferData *buffer, void *data, size_t dataLen, size_t offset)
@@ -107,5 +110,10 @@ local void OutputDataToBuffer(VkRenderContext *rc, GPUBufferData *buffer, void *
     memcpy(bufp, data, dataLen);
     vkUnmapMemory(rc->dev, buffer->deviceMemory);
 }
+
+void CopyGPUBuffer(VkRenderContext *rc,
+                   GPUBufferData *dest, GPUBufferData *src,
+                   VkDeviceSize size, VkDeviceSize offsetDest,
+                   VkDeviceSize offsetSrc, VkCommandPool commandPool);
 
 #endif

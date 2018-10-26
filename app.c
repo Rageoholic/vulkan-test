@@ -572,13 +572,30 @@ int main(int argc, char **argv)
         return returnValue;
     }
 
-    GPUBufferData vertexBuffer;
+    GPUBufferData stagingBuffer;
 
-    if (CreateGPUBufferData(&rc, physdev, sizeof(vertices), &vertexBuffer) != VK_SUCCESS)
+    if (CreateGPUBufferData(&rc, physdev, sizeof(vertices),
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            &stagingBuffer) != VK_SUCCESS)
+    {
+        puts("Could not set up staging buffer");
+        return 1;
+    }
+
+    OutputDataToBuffer(&rc, &stagingBuffer, vertices, sizeof(vertices), 0);
+
+    GPUBufferData vertexBuffer;
+    if (CreateGPUBufferData(&rc, physdev, sizeof(vertices),
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vertexBuffer) !=
+        VK_SUCCESS)
     {
         puts("Could not set up vertex buffer");
         return 1;
     }
+
+    CopyGPUBuffer(&rc, &vertexBuffer, &stagingBuffer, sizeof(vertices), 0, 0, commandPool);
 
     VkDeviceSize offsets[1] = {0};
 
@@ -592,7 +609,6 @@ int main(int argc, char **argv)
         puts("Could not properly set up command buffers");
         return returnValue;
     }
-    OutputDataToBuffer(&rc, &vertexBuffer, vertices, sizeof(vertices), 0);
 
     Semaphores s;
     if (!ApplicationCreateSemaphores(&rc, &s, MAX_CONCURRENT_FRAMES))
@@ -645,6 +661,7 @@ int main(int argc, char **argv)
                                               renderpass);
 
     DestroyGPUBufferInfo(&rc, &vertexBuffer);
+    DestroyGPUBufferInfo(&rc, &stagingBuffer);
 
     vkDestroyCommandPool(rc.dev, commandPool, NULL);
 

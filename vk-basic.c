@@ -582,13 +582,16 @@ local bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
 }
 
 VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
-                             size_t vertexBufferSize, GPUBufferData *buffer)
+                             size_t vertexBufferSize,
+                             VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                             GPUBufferData *buffer)
+
 {
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkBufferCreateInfo bufferInfo = {0};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = vertexBufferSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.usage = usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(rc->dev, &bufferInfo, NULL, &vertexBuffer) != VK_SUCCESS)
@@ -604,9 +607,7 @@ VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReq.size;
     if (!FindMemoryType(physdev, memReq.memoryTypeBits,
-                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                        &allocInfo.memoryTypeIndex))
+                        properties, &allocInfo.memoryTypeIndex))
     {
 
         return -1;
@@ -628,4 +629,43 @@ void DestroyGPUBufferInfo(VkRenderContext *rc, GPUBufferData *buffer)
 {
     vkDestroyBuffer(rc->dev, buffer->buffer, NULL);
     vkFreeMemory(rc->dev, buffer->deviceMemory, NULL);
+}
+
+void CopyGPUBuffer(VkRenderContext *rc,
+                   GPUBufferData *dest, GPUBufferData *src,
+                   VkDeviceSize size, VkDeviceSize offsetDest,
+                   VkDeviceSize offsetSrc, VkCommandPool commandPool)
+{
+    VkCommandBufferAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(rc->dev, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo = {0};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    {
+        VkBufferCopy copyRegion = {0};
+        copyRegion.dstOffset = offsetDest;
+        copyRegion.srcOffset = offsetSrc;
+        copyRegion.size = size;
+        vkCmdCopyBuffer(commandBuffer, src->buffer, dest->buffer, 1, &copyRegion);
+    }
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo = {0};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(rc->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(rc->graphicsQueue);
+
+    vkFreeCommandBuffers(rc->dev, commandPool, 1, &commandBuffer);
 }
