@@ -1,21 +1,23 @@
 /* Feature macros */
 
 #define GLFW_INCLUDE_VULKAN
+#define _POSIX_C_SOURCE (199309L)
 
-#include "rutils/math.h"
-
+#include "features.h"
 #include "rutils/file.h"
 #include "rutils/math.h"
 #include "rutils/string.h"
 #include "vk-basic.h"
 #include <GLFW/glfw3.h>
+#include <limits.h>
+#include <time.h>
 
 #define WIDTH 800
 #define HEIGHT 600
 
 #define VERT_SHADER_LOC "shaders/basic-shader.vert.spv"
 #define FRAG_SHADER_LOC "shaders/basic-shader.frag.spv"
-#define MAX_CONCURRENT_FRAMES 2
+#define MAX_CONCURRENT_FRAMES 10
 
 local bool resizeOccurred;
 
@@ -78,7 +80,7 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
         renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
         renderPassInfo.renderArea.extent = data->e;
 
-        VkClearValue clearColor = {0, 0, 0, 1};
+        VkClearValue clearColor = {.1f, .1f, .1f, 1};
         renderPassInfo.clearValueCount = 1;
         renderPassInfo.pClearValues = &clearColor;
 
@@ -113,7 +115,6 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
                                       VkCommandBuffer *commandBuffers, VkSemaphore imageSemaphore,
                                       VkSemaphore renderSemaphore, VkFence fence)
 {
-
     vkWaitForFences(rc->dev, 1, &fence, VK_TRUE, UINT64_MAX);
 
     u32 imageIndex;
@@ -296,31 +297,26 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
     return false;
 }
 
-local void
-ApplicationDestroySwapchainAndRelatedData(VkRenderContext *rc, VkSwapchainData *data,
-                                          VkCommandPool cpool,
-                                          VkCommandBuffer *cbuffers,
-                                          VkFramebuffer *framebuffers,
-                                          VkPipeline pipeline, VkPipelineLayout layout,
-                                          VkRenderPass renderpass)
+local void ApplicationDestroySwapchainAndRelatedData(VkRenderContext *rc, VkSwapchainData *data,
+                                                     VkCommandPool cpool,
+                                                     VkCommandBuffer *cbuffers,
+                                                     VkFramebuffer *framebuffers,
+                                                     VkPipeline pipeline, VkPipelineLayout layout,
+                                                     VkRenderPass renderpass)
 {
-
     for (u32 i = 0; i < data->imageCount; i++)
     {
         vkDestroyFramebuffer(rc->dev, framebuffers[i], NULL);
     }
     free(framebuffers);
-
     vkFreeCommandBuffers(rc->dev, cpool, data->imageCount, cbuffers);
     free(cbuffers);
-
     vkDestroyPipeline(rc->dev, pipeline, NULL);
     vkDestroyPipelineLayout(rc->dev, layout, NULL);
-
     vkDestroyRenderPass(rc->dev, renderpass, NULL);
-
     DestroySwapChainData(rc, data);
 }
+
 local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *data, GLFWwindow *win,
                                         VkPhysicalDevice physdev, VkSurfaceKHR surf, GPUBufferData *vertexBuffers,
                                         VkDeviceSize *offsets, VkCommandPool cpool,
@@ -330,8 +326,11 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
                                         VkFramebuffer **framebuffers,
                                         VkPipeline *pipeline, VkPipelineLayout *layout,
                                         VkRenderPass *renderpass)
-
 {
+    if (PROFILING)
+    {
+        puts("RECREATE SWAPCHAIN");
+    }
     vkDeviceWaitIdle(rc->dev);
     ApplicationDestroySwapchainAndRelatedData(rc, data, cpool, *cbuffers,
                                               *framebuffers, *pipeline, *layout,
@@ -348,7 +347,6 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
                                                *framebuffers, vertexBuffers, offsets);
-
     return true;
 }
 
@@ -367,6 +365,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
     }
     return VK_FALSE;
 }
+
 static VkResult CreateDebugUtilsMessenger(VkInstance instance,
                                           const VkDebugUtilsMessengerCreateInfoEXT *createInfo,
                                           VkDebugUtilsMessengerEXT *callback)
@@ -423,6 +422,7 @@ int main(int argc, char **argv)
 
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    /* glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE); */
 
     GLFWwindow *win = glfwCreateWindow(WIDTH, HEIGHT, "vulkan", NULL, NULL);
     if (win == NULL)
@@ -619,6 +619,9 @@ int main(int argc, char **argv)
     u32 frameCount = 0;
     while (!glfwWindowShouldClose(win))
     {
+        struct timespec start;
+        clock_gettime(CLOCK_REALTIME, &start);
+
         u32 sindex = frameCount++ % s.count;
         glfwPollEvents();
         DrawResult result = ApplicationDrawImage(&rc, &swapchainData, commandBuffers,
@@ -633,6 +636,25 @@ int main(int argc, char **argv)
                                          &vertexInputInfo, &commandBuffers,
                                          &framebuffers, &pipeline, &layout,
                                          &renderpass);
+            resizeOccurred = false;
+        }
+
+        struct timespec end;
+        clock_gettime(CLOCK_REALTIME, &end);
+
+        long timePassed;
+        if (PROFILING)
+        {
+            if (end.tv_nsec > start.tv_nsec)
+            {
+                timePassed = end.tv_nsec - start.tv_nsec;
+            }
+            else
+            {
+                timePassed = 1000000000 - start.tv_nsec + end.tv_nsec;
+            }
+            timePassed /= 1000;
+            printf("frame %10" PRIu32 " took %6ld microseconds\n", frameCount, timePassed);
         }
     }
 
