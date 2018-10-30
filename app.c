@@ -34,6 +34,13 @@ typedef struct Vertex
     Vec3f color;
 } Vertex;
 
+typedef struct Uniform
+{
+    Mat4f model;
+    Mat4f view;
+    Mat4f proj;
+} Uniform;
+
 local Vertex vertices[] = {
     {{-0.5, -0.5}, {1, 0, 0}},
     {{.5, -.5}, {0, 1, 0}},
@@ -47,7 +54,8 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
                                                       VkPipeline graphicsPipeline, VkFramebuffer *framebuffers,
                                                       GPUBufferData *vertexBuffer, VkDeviceSize *offsets,
-                                                      GPUBufferData *indexBuffer, VkDeviceSize indexOffset)
+                                                      GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
+                                                      VkPipelineLayout pipelineLayout, VkDescriptorSet *descriptorSets)
 {
     VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * data->imageCount);
 
@@ -91,6 +99,8 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
             vkCmdBindPipeline(ret[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
             vkCmdBindVertexBuffers(ret[i], 0, 1, &vertexBuffer->buffer, offsets);
             vkCmdBindIndexBuffer(ret[i], indexBuffer->buffer, indexOffset, VK_INDEX_TYPE_UINT16);
+            vkCmdBindDescriptorSets(ret[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                                    0, 1, &descriptorSets[i], 0, NULL);
             vkCmdDrawIndexed(ret[i], countof(indices), 1, 0, 0, 0);
         }
         vkCmdEndRenderPass(ret[i]);
@@ -105,6 +115,27 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
     return ret;
 }
 
+local VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swapchain, VkDescriptorType type)
+{
+    ignore rc;
+    VkDescriptorPoolSize poolSize = {0};
+    poolSize.type = type;
+    poolSize.descriptorCount = swapchain->imageCount;
+
+    VkDescriptorPoolCreateInfo poolInfo = {0};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = swapchain->imageCount;
+    VkDescriptorPool ret;
+
+    if (vkCreateDescriptorPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
+    {
+        return VK_NULL_HANDLE;
+    }
+    return ret;
+}
+
 typedef struct Semaphores
 {
     VkSemaphore *imageAvailableSemaphores;
@@ -114,6 +145,10 @@ typedef struct Semaphores
 } Semaphores;
 
 local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data,
+                                      Uniform *u,
+                                      GPUBufferData *uniformBuffers,
+                                      GPUBufferData *uniformStagingBuffer,
+                                      VkCommandPool commandPool,
                                       VkCommandBuffer *commandBuffers, VkSemaphore imageSemaphore,
                                       VkSemaphore renderSemaphore, VkFence fence)
 {
@@ -125,6 +160,9 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
     {
         return SWAP_CHAIN_OUT_OF_DATE;
     }
+    OutputDataToBuffer(rc, uniformStagingBuffer, u, sizeof(*u), 0);
+
+    CopyGPUBuffer(rc, &uniformBuffers[imageIndex], uniformStagingBuffer, sizeof(*u), 0, 0, commandPool);
 
     VkSubmitInfo submitInfo = {0};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -325,8 +363,9 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
                                         GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
                                         VkCommandPool cpool,
                                         VkShaderModule vertShader, VkShaderModule fragShader,
-                                        VkDescriptorSetLayout *descriptorSets,
+                                        VkDescriptorSetLayout *descriptorSetLayouts,
                                         u32 descriptorSetCount,
+                                        VkDescriptorSet *descriptorSets,
                                         VkPipelineVertexInputStateCreateInfo *inputInfo,
                                         VkCommandBuffer **cbuffers,
                                         VkFramebuffer **framebuffers,
@@ -351,13 +390,13 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
     *pipeline = CreateGraphicsPipeline(rc, data,
                                        vertShader, fragShader,
                                        *renderpass,
-                                       descriptorSets, descriptorSetCount,
+                                       descriptorSetLayouts, descriptorSetCount,
                                        inputInfo, layout);
     *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
                                                *framebuffers, vertexBuffers, offsets,
-                                               indexBuffer, indexOffset);
+                                               indexBuffer, indexOffset, *layout, descriptorSets);
     return true;
 }
 
@@ -567,9 +606,9 @@ int main(int argc, char **argv)
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = &uboLayoutBinding;
-    VkDescriptorSetLayout descriptorSet;
+    VkDescriptorSetLayout descriptorSetLayout;
 
-    if (vkCreateDescriptorSetLayout(rc.dev, &layoutInfo, NULL, &descriptorSet) != VK_SUCCESS)
+    if (vkCreateDescriptorSetLayout(rc.dev, &layoutInfo, NULL, &descriptorSetLayout) != VK_SUCCESS)
     {
         puts("Error. Could not make descriptor set layout");
         return 1;
@@ -578,7 +617,7 @@ int main(int argc, char **argv)
     VkPipelineLayout layout;
     VkPipeline pipeline = CreateGraphicsPipeline(&rc, &swapchainData,
                                                  vertShader, fragShader, renderpass,
-                                                 &descriptorSet, 1,
+                                                 &descriptorSetLayout, 1,
                                                  &vertexInputInfo,
                                                  &layout);
     if (pipeline == VK_NULL_HANDLE)
@@ -653,13 +692,81 @@ int main(int argc, char **argv)
     CopyGPUBuffer(&rc, &indexBuffer, &stagingBuffer, sizeof(indices), 0, 0, commandPool);
     DestroyGPUBufferInfo(&rc, &stagingBuffer);
 
+    GPUBufferData *uniformBuffers = malloc(sizeof(*uniformBuffers) * swapchainData.imageCount);
+
+    for (u32 i = 0; i < swapchainData.imageCount; i++)
+    {
+        if (CreateGPUBufferData(&rc, physdev, sizeof(Uniform),
+                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &uniformBuffers[i]) !=
+            VK_SUCCESS)
+        {
+            puts("could not set up uniform buffers");
+            return 1;
+        }
+    }
+
+    GPUBufferData uniformStagingBuffer;
+    if (CreateGPUBufferData(&rc, physdev, sizeof(Uniform), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &uniformStagingBuffer) != VK_SUCCESS)
+    {
+        puts("could not set up uniform buffers");
+        return 1;
+    }
+
+    VkDescriptorPool descriptorPool = CreateDescriptorPool(&rc, &swapchainData, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    if (!descriptorPool)
+    {
+        puts("Error could not create descriptor pool");
+        return 1;
+    }
+
+    VkDescriptorSet descriptorSets[swapchainData.imageCount];
+    VkDescriptorSetLayout descriptorSetLayouts[swapchainData.imageCount];
+    for (u32 i = 0; i < swapchainData.imageCount; i++)
+    {
+        descriptorSetLayouts[i] = descriptorSetLayout;
+    }
+    VkDescriptorSetAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorSetCount = swapchainData.imageCount;
+    allocInfo.pSetLayouts = descriptorSetLayouts;
+
+    if (vkAllocateDescriptorSets(rc.dev, &allocInfo, descriptorSets) != VK_SUCCESS)
+    {
+        puts("Could not allocate descriptor sets");
+        return 1;
+    }
+
+    for (u32 i = 0; i < swapchainData.imageCount; i++)
+    {
+        VkDescriptorBufferInfo bufferInfo = {0};
+        bufferInfo.buffer = uniformBuffers[i].buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(Uniform);
+
+        VkWriteDescriptorSet descriptorWrite = {0};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSets[i];
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(rc.dev, 1, &descriptorWrite, 0, NULL);
+    }
+
     VkDeviceSize offsets[1] = {0};
 
-    VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, &swapchainData, commandPool,
-                                                                     renderpass, pipeline,
-                                                                     framebuffers,
-                                                                     &vertexBuffer, offsets,
-                                                                     &indexBuffer, 0);
+    VkCommandBuffer *commandBuffers =
+        ApplicationSetupCommandBuffers(
+            &rc, &swapchainData, commandPool,
+            renderpass, pipeline,
+            framebuffers,
+            &vertexBuffer, offsets,
+            &indexBuffer, 0, layout, descriptorSets);
 
     if (commandBuffers == NULL)
     {
@@ -674,27 +781,47 @@ int main(int argc, char **argv)
         return returnValue;
     }
     u32 frameCount = 0;
+
+    double lastFrameTime = glfwGetTime();
+    float totalTime = 0;
     while (!glfwWindowShouldClose(win))
     {
+        /* Input */
+        double frameStartTime = glfwGetTime();
+        float dt = (float)frameStartTime - (float)lastFrameTime;
+        totalTime += dt;
+        lastFrameTime = frameStartTime;
+
         struct timespec start;
         clock_gettime(CLOCK_REALTIME, &start);
 
         u32 sindex = frameCount++ % s.count;
+
         glfwPollEvents();
-        DrawResult result = ApplicationDrawImage(&rc, &swapchainData, commandBuffers,
-                                                 s.imageAvailableSemaphores[sindex],
-                                                 s.renderFinishedSemaphores[sindex],
-                                                 s.fences[sindex]);
+
+        /* Update */
+        Uniform u = {
+            .proj = CreatePerspectiveMat4f(DegToRad(45), swapchainData.e.width / (float)swapchainData.e.height, .1f, 10),
+            .view = CalcLookAtMat4f(vec3f(2, 2, 2), vec3f(0, 0, 0), vec3f(0, 0, 1)),
+            .model = RotateMat4f(&IdMat4f, totalTime * DegToRad(90), vec3f(0, 0, 1)),
+        };
+        u.proj.e[1][1] = -1;
+
+        /* render */
+        DrawResult result = ApplicationDrawImage(&rc, &swapchainData, &u,
+                                                 uniformBuffers, &uniformStagingBuffer, commandPool,
+                                                 commandBuffers, s.imageAvailableSemaphores[sindex],
+                                                 s.renderFinishedSemaphores[sindex], s.fences[sindex]);
         if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
             ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,
                                          &vertexBuffer, offsets,
                                          &indexBuffer, 0,
                                          commandPool, vertShader, fragShader,
-                                         &descriptorSet, 1,
+                                         descriptorSetLayouts, 1,
+                                         descriptorSets,
                                          &vertexInputInfo, &commandBuffers,
                                          &framebuffers, &pipeline,
-
                                          &layout, &renderpass);
             resizeOccurred = false;
         }
@@ -724,6 +851,7 @@ int main(int argc, char **argv)
 
     vkDeviceWaitIdle(rc.dev);
     /* Cleanup */
+    vkDestroyDescriptorPool(rc.dev, descriptorPool, NULL);
 
     vkDestroyShaderModule(rc.dev, vertShader, NULL);
     vkDestroyShaderModule(rc.dev, fragShader, NULL);
@@ -737,11 +865,17 @@ int main(int argc, char **argv)
     free(s.imageAvailableSemaphores);
     free(s.renderFinishedSemaphores);
     free(s.fences);
+    u32 imageCount = swapchainData.imageCount;
 
     ApplicationDestroySwapchainAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
                                               framebuffers, pipeline, layout,
                                               renderpass);
-    vkDestroyDescriptorSetLayout(rc.dev, descriptorSet, NULL);
+    vkDestroyDescriptorSetLayout(rc.dev, descriptorSetLayout, NULL);
+    for (u32 i = 0; i < imageCount; i++)
+    {
+        DestroyGPUBufferInfo(&rc, &uniformBuffers[i]);
+    }
+    DestroyGPUBufferInfo(&rc, &uniformStagingBuffer);
 
     DestroyGPUBufferInfo(&rc, &vertexBuffer);
     DestroyGPUBufferInfo(&rc, &indexBuffer);

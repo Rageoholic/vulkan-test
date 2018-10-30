@@ -7,7 +7,8 @@ $(VERT_SHADERS))
 FRAG_SHADER_TARGETS = $(patsubst shaders/%.frag, shaders/%.frag.spv,	\
 $(FRAG_SHADERS))
 
-LDFLAGS += -lglfw -lvulkan
+LDFLAGS += -lglfw -lvulkan -lm
+
 CFLAGS += -g
 all: app $(VERT_SHADER_TARGETS) $(FRAG_SHADER_TARGETS)
 app: app.o vk-basic.o rutils.a

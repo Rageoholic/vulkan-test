@@ -360,7 +360,7 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
-                                  VkDescriptorSetLayout *descriptorSets,
+                                  VkDescriptorSetLayout *descriptorSetLayouts,
                                   u32 descriptorSetsCount,
                                   VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
                                   VkPipelineLayout *layout)
@@ -409,8 +409,8 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling = {0};
@@ -446,7 +446,7 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
     VkPipelineLayoutCreateInfo pci = {0};
     pci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pci.setLayoutCount = descriptorSetsCount;
-    pci.pSetLayouts = descriptorSets;
+    pci.pSetLayouts = descriptorSetLayouts;
 
     if (vkCreatePipelineLayout(rc->dev, &pci, NULL, layout))
     {
