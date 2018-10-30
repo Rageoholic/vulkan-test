@@ -81,6 +81,8 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
+                                  VkDescriptorSetLayout *descriptorSets,
+                                  u32 descriptorSetsCount,
                                   VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
                                   VkPipelineLayout *layout);
 

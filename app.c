@@ -35,17 +35,19 @@ typedef struct Vertex
 } Vertex;
 
 local Vertex vertices[] = {
-
-    {{0.0, -0.5}, {1, 0, 0}},
-    {{0.5, 0.5}, {0, 1, 0}},
-    {{-0.5, 0.5}, {0, 0, 1}}};
+    {{-0.5, -0.5}, {1, 0, 0}},
+    {{.5, -.5}, {0, 1, 0}},
+    {{.5, .5}, {0, 0, 1}},
+    {{-.5, .5}, {1, 1, 1}}};
+local u16 indices[] = {0, 1, 2, 2, 3, 0};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
 local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwapchainData *data,
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
                                                       VkPipeline graphicsPipeline, VkFramebuffer *framebuffers,
-                                                      GPUBufferData *vertexBuffer, VkDeviceSize *offsets)
+                                                      GPUBufferData *vertexBuffer, VkDeviceSize *offsets,
+                                                      GPUBufferData *indexBuffer, VkDeviceSize indexOffset)
 {
     VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * data->imageCount);
 
@@ -88,8 +90,8 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
         {
             vkCmdBindPipeline(ret[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
             vkCmdBindVertexBuffers(ret[i], 0, 1, &vertexBuffer->buffer, offsets);
-            vkCmdBindVertexBuffers(ret[i], 0, 1, &vertexBuffer->buffer, offsets);
-            vkCmdDraw(ret[i], 3, 1, 0, 0);
+            vkCmdBindIndexBuffer(ret[i], indexBuffer->buffer, indexOffset, VK_INDEX_TYPE_UINT16);
+            vkCmdDrawIndexed(ret[i], countof(indices), 1, 0, 0, 0);
         }
         vkCmdEndRenderPass(ret[i]);
 
@@ -282,8 +284,8 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
                                  const char **extensionList,
                                  size_t extensionCount)
 {
-    VkQueueIndices indices;
-    bool properIndices = GetDeviceQueueGraphicsAndPresentationIndices(dev, surf, &indices);
+    VkQueueIndices qindices;
+    bool properIndices = GetDeviceQueueGraphicsAndPresentationIndices(dev, surf, &qindices);
     if (properIndices &&
         CheckDeviceExtensionSupport(dev, extensionList, extensionCount))
     {
@@ -318,9 +320,13 @@ local void ApplicationDestroySwapchainAndRelatedData(VkRenderContext *rc, VkSwap
 }
 
 local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *data, GLFWwindow *win,
-                                        VkPhysicalDevice physdev, VkSurfaceKHR surf, GPUBufferData *vertexBuffers,
-                                        VkDeviceSize *offsets, VkCommandPool cpool,
+                                        VkPhysicalDevice physdev, VkSurfaceKHR surf,
+                                        GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
+                                        GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
+                                        VkCommandPool cpool,
                                         VkShaderModule vertShader, VkShaderModule fragShader,
+                                        VkDescriptorSetLayout *descriptorSets,
+                                        u32 descriptorSetCount,
                                         VkPipelineVertexInputStateCreateInfo *inputInfo,
                                         VkCommandBuffer **cbuffers,
                                         VkFramebuffer **framebuffers,
@@ -342,11 +348,16 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
         return false;
     }
     *renderpass = CreateRenderPass(rc, data);
-    *pipeline = CreateGraphicsPipeline(rc, data, vertShader, fragShader, *renderpass, inputInfo, layout);
+    *pipeline = CreateGraphicsPipeline(rc, data,
+                                       vertShader, fragShader,
+                                       *renderpass,
+                                       descriptorSets, descriptorSetCount,
+                                       inputInfo, layout);
     *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
-                                               *framebuffers, vertexBuffers, offsets);
+                                               *framebuffers, vertexBuffers, offsets,
+                                               indexBuffer, indexOffset);
     return true;
 }
 
@@ -546,10 +557,29 @@ int main(int argc, char **argv)
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
 
+    VkDescriptorSetLayoutBinding uboLayoutBinding = {0};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &uboLayoutBinding;
+    VkDescriptorSetLayout descriptorSet;
+
+    if (vkCreateDescriptorSetLayout(rc.dev, &layoutInfo, NULL, &descriptorSet) != VK_SUCCESS)
+    {
+        puts("Error. Could not make descriptor set layout");
+        return 1;
+    }
+
     VkPipelineLayout layout;
     VkPipeline pipeline = CreateGraphicsPipeline(&rc, &swapchainData,
-                                                 vertShader, fragShader,
-                                                 renderpass, &vertexInputInfo,
+                                                 vertShader, fragShader, renderpass,
+                                                 &descriptorSet, 1,
+                                                 &vertexInputInfo,
                                                  &layout);
     if (pipeline == VK_NULL_HANDLE)
     {
@@ -597,12 +627,39 @@ int main(int argc, char **argv)
 
     CopyGPUBuffer(&rc, &vertexBuffer, &stagingBuffer, sizeof(vertices), 0, 0, commandPool);
 
+    DestroyGPUBufferInfo(&rc, &stagingBuffer);
+
+    if (CreateGPUBufferData(&rc, physdev, sizeof(indices),
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            &stagingBuffer) != VK_SUCCESS)
+    {
+        puts("Could not set up staging buffer 2");
+        return 1;
+    }
+
+    OutputDataToBuffer(&rc, &stagingBuffer, indices, sizeof(indices), 0);
+
+    GPUBufferData indexBuffer;
+    if (CreateGPUBufferData(&rc, physdev, sizeof(indices),
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &indexBuffer) !=
+        VK_SUCCESS)
+    {
+        puts("Could not set up index buffer");
+        return 1;
+    }
+
+    CopyGPUBuffer(&rc, &indexBuffer, &stagingBuffer, sizeof(indices), 0, 0, commandPool);
+    DestroyGPUBufferInfo(&rc, &stagingBuffer);
+
     VkDeviceSize offsets[1] = {0};
 
     VkCommandBuffer *commandBuffers = ApplicationSetupCommandBuffers(&rc, &swapchainData, commandPool,
                                                                      renderpass, pipeline,
                                                                      framebuffers,
-                                                                     &vertexBuffer, offsets);
+                                                                     &vertexBuffer, offsets,
+                                                                     &indexBuffer, 0);
 
     if (commandBuffers == NULL)
     {
@@ -632,10 +689,13 @@ int main(int argc, char **argv)
         {
             ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,
                                          &vertexBuffer, offsets,
+                                         &indexBuffer, 0,
                                          commandPool, vertShader, fragShader,
+                                         &descriptorSet, 1,
                                          &vertexInputInfo, &commandBuffers,
-                                         &framebuffers, &pipeline, &layout,
-                                         &renderpass);
+                                         &framebuffers, &pipeline,
+
+                                         &layout, &renderpass);
             resizeOccurred = false;
         }
 
@@ -681,9 +741,10 @@ int main(int argc, char **argv)
     ApplicationDestroySwapchainAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
                                               framebuffers, pipeline, layout,
                                               renderpass);
+    vkDestroyDescriptorSetLayout(rc.dev, descriptorSet, NULL);
 
     DestroyGPUBufferInfo(&rc, &vertexBuffer);
-    DestroyGPUBufferInfo(&rc, &stagingBuffer);
+    DestroyGPUBufferInfo(&rc, &indexBuffer);
 
     vkDestroyCommandPool(rc.dev, commandPool, NULL);
 

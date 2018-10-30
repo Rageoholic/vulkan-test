@@ -360,6 +360,8 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
+                                  VkDescriptorSetLayout *descriptorSets,
+                                  u32 descriptorSetsCount,
                                   VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
                                   VkPipelineLayout *layout)
 {
@@ -443,6 +445,8 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
 
     VkPipelineLayoutCreateInfo pci = {0};
     pci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pci.setLayoutCount = descriptorSetsCount;
+    pci.pSetLayouts = descriptorSets;
 
     if (vkCreatePipelineLayout(rc->dev, &pci, NULL, layout))
     {
