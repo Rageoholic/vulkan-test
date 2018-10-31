@@ -50,6 +50,49 @@ local u16 indices[] = {0, 1, 2, 2, 3, 0};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
+local VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *data,
+                                              VkDescriptorPool descriptorPool,
+                                              GPUBufferData *buffers, VkDescriptorSetLayout layout)
+{
+    VkDescriptorSet *ret = malloc(data->imageCount * sizeof(*ret));
+    VkDescriptorSetLayout descriptorSetLayouts[data->imageCount];
+    for (u32 i = 0; i < data->imageCount; i++)
+    {
+        descriptorSetLayouts[i] = layout;
+    }
+    VkDescriptorSetAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorSetCount = data->imageCount;
+    allocInfo.pSetLayouts = descriptorSetLayouts;
+
+    if (vkAllocateDescriptorSets(rc->dev, &allocInfo, ret) != VK_SUCCESS)
+    {
+        puts("Could not allocate descriptor sets");
+        return NULL;
+    }
+
+    for (u32 i = 0; i < data->imageCount; i++)
+    {
+        VkDescriptorBufferInfo bufferInfo = {0};
+        bufferInfo.buffer = buffers[i].buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(Uniform);
+
+        VkWriteDescriptorSet descriptorWrite = {0};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = ret[i];
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(rc->dev, 1, &descriptorWrite, 0, NULL);
+    }
+    return ret;
+}
+
 local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwapchainData *data,
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
                                                       VkPipeline graphicsPipeline, VkFramebuffer *framebuffers,
@@ -361,11 +404,12 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
                                         VkPhysicalDevice physdev, VkSurfaceKHR surf,
                                         GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
                                         GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
+                                        GPUBufferData **uniformBuffers,
                                         VkCommandPool cpool,
                                         VkShaderModule vertShader, VkShaderModule fragShader,
-                                        VkDescriptorSetLayout *descriptorSetLayouts,
-                                        u32 descriptorSetCount,
-                                        VkDescriptorSet *descriptorSets,
+                                        VkDescriptorSetLayout descriptorSetLayouts,
+                                        VkDescriptorSet **descriptorSets,
+                                        VkDescriptorPool *descriptorPool,
                                         VkPipelineVertexInputStateCreateInfo *inputInfo,
                                         VkCommandBuffer **cbuffers,
                                         VkFramebuffer **framebuffers,
@@ -377,6 +421,11 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
         puts("RECREATE SWAPCHAIN");
     }
     vkDeviceWaitIdle(rc->dev);
+    u32 oldImageCount = data->imageCount;
+    vkDestroyDescriptorPool(rc->dev, *descriptorPool, NULL);
+
+    free(*descriptorSets);
+
     ApplicationDestroySwapchainAndRelatedData(rc, data, cpool, *cbuffers,
                                               *framebuffers, *pipeline, *layout,
                                               *renderpass);
@@ -390,13 +439,37 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
     *pipeline = CreateGraphicsPipeline(rc, data,
                                        vertShader, fragShader,
                                        *renderpass,
-                                       descriptorSetLayouts, descriptorSetCount,
+                                       &descriptorSetLayouts, 1,
                                        inputInfo, layout);
+
+    if (oldImageCount < data->imageCount)
+    {
+        GPUBufferData *newBuf = malloc(sizeof(*newBuf) * data->imageCount);
+        for (u32 i = 0; i < oldImageCount; i++)
+        {
+            newBuf[i] = (*uniformBuffers)[i];
+        }
+        for (u32 i = oldImageCount; i < data->imageCount; i++)
+        {
+            if (CreateGPUBufferData(rc, physdev, sizeof(Uniform),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                    &newBuf[i]) != VK_SUCCESS)
+            {
+                return false;
+            }
+        }
+        free(*uniformBuffers);
+        *uniformBuffers = newBuf;
+    }
+    *descriptorPool = CreateDescriptorPool(rc, data, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    *descriptorSets = AllocateDescriptorSets(rc, data, *descriptorPool, *uniformBuffers, descriptorSetLayouts);
     *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
                                                *framebuffers, vertexBuffers, offsets,
-                                               indexBuffer, indexOffset, *layout, descriptorSets);
+                                               indexBuffer, indexOffset, *layout, *descriptorSets);
     return true;
 }
 
@@ -721,42 +794,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    VkDescriptorSet descriptorSets[swapchainData.imageCount];
-    VkDescriptorSetLayout descriptorSetLayouts[swapchainData.imageCount];
-    for (u32 i = 0; i < swapchainData.imageCount; i++)
-    {
-        descriptorSetLayouts[i] = descriptorSetLayout;
-    }
-    VkDescriptorSetAllocateInfo allocInfo = {0};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = swapchainData.imageCount;
-    allocInfo.pSetLayouts = descriptorSetLayouts;
-
-    if (vkAllocateDescriptorSets(rc.dev, &allocInfo, descriptorSets) != VK_SUCCESS)
-    {
-        puts("Could not allocate descriptor sets");
-        return 1;
-    }
-
-    for (u32 i = 0; i < swapchainData.imageCount; i++)
-    {
-        VkDescriptorBufferInfo bufferInfo = {0};
-        bufferInfo.buffer = uniformBuffers[i].buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(Uniform);
-
-        VkWriteDescriptorSet descriptorWrite = {0};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = descriptorSets[i];
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
-
-        vkUpdateDescriptorSets(rc.dev, 1, &descriptorWrite, 0, NULL);
-    }
+    VkDescriptorSet *descriptorSets = AllocateDescriptorSets(&rc, &swapchainData, descriptorPool, uniformBuffers, descriptorSetLayout);
 
     VkDeviceSize offsets[1] = {0};
 
@@ -817,9 +855,11 @@ int main(int argc, char **argv)
             ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,
                                          &vertexBuffer, offsets,
                                          &indexBuffer, 0,
+                                         &uniformBuffers,
                                          commandPool, vertShader, fragShader,
-                                         descriptorSetLayouts, 1,
-                                         descriptorSets,
+                                         descriptorSetLayout,
+                                         &descriptorSets,
+                                         &descriptorPool,
                                          &vertexInputInfo, &commandBuffers,
                                          &framebuffers, &pipeline,
                                          &layout, &renderpass);
@@ -870,6 +910,7 @@ int main(int argc, char **argv)
     ApplicationDestroySwapchainAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
                                               framebuffers, pipeline, layout,
                                               renderpass);
+
     vkDestroyDescriptorSetLayout(rc.dev, descriptorSetLayout, NULL);
     for (u32 i = 0; i < imageCount; i++)
     {
