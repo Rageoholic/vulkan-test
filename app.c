@@ -50,49 +50,6 @@ local u16 indices[] = {0, 1, 2, 2, 3, 0};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
-local VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *data,
-                                              VkDescriptorPool descriptorPool,
-                                              GPUBufferData *buffers, VkDescriptorSetLayout layout)
-{
-    VkDescriptorSet *ret = malloc(data->imageCount * sizeof(*ret));
-    VkDescriptorSetLayout descriptorSetLayouts[data->imageCount];
-    for (u32 i = 0; i < data->imageCount; i++)
-    {
-        descriptorSetLayouts[i] = layout;
-    }
-    VkDescriptorSetAllocateInfo allocInfo = {0};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = data->imageCount;
-    allocInfo.pSetLayouts = descriptorSetLayouts;
-
-    if (vkAllocateDescriptorSets(rc->dev, &allocInfo, ret) != VK_SUCCESS)
-    {
-        puts("Could not allocate descriptor sets");
-        return NULL;
-    }
-
-    for (u32 i = 0; i < data->imageCount; i++)
-    {
-        VkDescriptorBufferInfo bufferInfo = {0};
-        bufferInfo.buffer = buffers[i].buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(Uniform);
-
-        VkWriteDescriptorSet descriptorWrite = {0};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = ret[i];
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
-
-        vkUpdateDescriptorSets(rc->dev, 1, &descriptorWrite, 0, NULL);
-    }
-    return ret;
-}
-
 local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwapchainData *data,
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
                                                       VkPipeline graphicsPipeline, VkFramebuffer *framebuffers,
@@ -155,27 +112,6 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
         }
     }
 
-    return ret;
-}
-
-local VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swapchain, VkDescriptorType type)
-{
-    ignore rc;
-    VkDescriptorPoolSize poolSize = {0};
-    poolSize.type = type;
-    poolSize.descriptorCount = swapchain->imageCount;
-
-    VkDescriptorPoolCreateInfo poolInfo = {0};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = swapchain->imageCount;
-    VkDescriptorPool ret;
-
-    if (vkCreateDescriptorPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
-    {
-        return VK_NULL_HANDLE;
-    }
     return ret;
 }
 
@@ -247,7 +183,6 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
 
 local bool ApplicationCreateSemaphores(VkRenderContext *rc, Semaphores *out, u32 semaphoreCount)
 {
-
     out->count = semaphoreCount;
     out->imageAvailableSemaphores = malloc(sizeof(out->imageAvailableSemaphores[0]) * semaphoreCount);
     out->renderFinishedSemaphores = malloc(sizeof(out->renderFinishedSemaphores[0]) * semaphoreCount);
@@ -464,7 +399,7 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
         *uniformBuffers = newBuf;
     }
     *descriptorPool = CreateDescriptorPool(rc, data, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    *descriptorSets = AllocateDescriptorSets(rc, data, *descriptorPool, *uniformBuffers, descriptorSetLayouts);
+    *descriptorSets = AllocateDescriptorSets(rc, data, *descriptorPool, *uniformBuffers, descriptorSetLayouts, sizeof(Uniform));
     *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
@@ -794,7 +729,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    VkDescriptorSet *descriptorSets = AllocateDescriptorSets(&rc, &swapchainData, descriptorPool, uniformBuffers, descriptorSetLayout);
+    VkDescriptorSet *descriptorSets = AllocateDescriptorSets(&rc, &swapchainData,
+                                                             descriptorPool, uniformBuffers,
+                                                             descriptorSetLayout, sizeof(Uniform));
 
     VkDeviceSize offsets[1] = {0};
 
@@ -850,6 +787,7 @@ int main(int argc, char **argv)
                                                  uniformBuffers, &uniformStagingBuffer, commandPool,
                                                  commandBuffers, s.imageAvailableSemaphores[sindex],
                                                  s.renderFinishedSemaphores[sindex], s.fences[sindex]);
+
         if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
             ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,

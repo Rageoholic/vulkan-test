@@ -673,3 +673,67 @@ void CopyGPUBuffer(VkRenderContext *rc,
 
     vkFreeCommandBuffers(rc->dev, commandPool, 1, &commandBuffer);
 }
+
+VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swapchain, VkDescriptorType type)
+{
+    VkDescriptorPoolSize poolSize = {0};
+    poolSize.type = type;
+    poolSize.descriptorCount = swapchain->imageCount;
+
+    VkDescriptorPoolCreateInfo poolInfo = {0};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = swapchain->imageCount;
+    VkDescriptorPool ret;
+
+    if (vkCreateDescriptorPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
+    {
+        return VK_NULL_HANDLE;
+    }
+    return ret;
+}
+
+VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *data,
+                                        VkDescriptorPool descriptorPool,
+                                        GPUBufferData *buffers, VkDescriptorSetLayout layout,
+                                        VkDeviceSize typeSize)
+{
+    VkDescriptorSet *ret = malloc(data->imageCount * sizeof(*ret));
+    VkDescriptorSetLayout descriptorSetLayouts[data->imageCount];
+    for (u32 i = 0; i < data->imageCount; i++)
+    {
+        descriptorSetLayouts[i] = layout;
+    }
+    VkDescriptorSetAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorSetCount = data->imageCount;
+    allocInfo.pSetLayouts = descriptorSetLayouts;
+
+    if (vkAllocateDescriptorSets(rc->dev, &allocInfo, ret) != VK_SUCCESS)
+    {
+        puts("Could not allocate descriptor sets");
+        return NULL;
+    }
+
+    for (u32 i = 0; i < data->imageCount; i++)
+    {
+        VkDescriptorBufferInfo bufferInfo = {0};
+        bufferInfo.buffer = buffers[i].buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = typeSize;
+
+        VkWriteDescriptorSet descriptorWrite = {0};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = ret[i];
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(rc->dev, 1, &descriptorWrite, 0, NULL);
+    }
+    return ret;
+}

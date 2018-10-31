@@ -117,5 +117,11 @@ void CopyGPUBuffer(VkRenderContext *rc,
                    GPUBufferData *dest, GPUBufferData *src,
                    VkDeviceSize size, VkDeviceSize offsetDest,
                    VkDeviceSize offsetSrc, VkCommandPool commandPool);
+VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swapchain, VkDescriptorType type);
+
+VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *data,
+                                        VkDescriptorPool descriptorPool,
+                                        GPUBufferData *buffers, VkDescriptorSetLayout layout,
+                                        VkDeviceSize typeSize);
 
 #endif
