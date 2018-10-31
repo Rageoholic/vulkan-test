@@ -339,12 +339,10 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
                                         VkPhysicalDevice physdev, VkSurfaceKHR surf,
                                         GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
                                         GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
-                                        GPUBufferData **uniformBuffers,
                                         VkCommandPool cpool,
                                         VkShaderModule vertShader, VkShaderModule fragShader,
                                         VkDescriptorSetLayout descriptorSetLayouts,
-                                        VkDescriptorSet **descriptorSets,
-                                        VkDescriptorPool *descriptorPool,
+                                        VkDescriptorSet *descriptorSets,
                                         VkPipelineVertexInputStateCreateInfo *inputInfo,
                                         VkCommandBuffer **cbuffers,
                                         VkFramebuffer **framebuffers,
@@ -356,11 +354,6 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
         puts("RECREATE SWAPCHAIN");
     }
     vkDeviceWaitIdle(rc->dev);
-    u32 oldImageCount = data->imageCount;
-    vkDestroyDescriptorPool(rc->dev, *descriptorPool, NULL);
-
-    free(*descriptorSets);
-
     ApplicationDestroySwapchainAndRelatedData(rc, data, cpool, *cbuffers,
                                               *framebuffers, *pipeline, *layout,
                                               *renderpass);
@@ -377,34 +370,11 @@ local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *da
                                        &descriptorSetLayouts, 1,
                                        inputInfo, layout);
 
-    if (oldImageCount < data->imageCount)
-    {
-        GPUBufferData *newBuf = malloc(sizeof(*newBuf) * data->imageCount);
-        for (u32 i = 0; i < oldImageCount; i++)
-        {
-            newBuf[i] = (*uniformBuffers)[i];
-        }
-        for (u32 i = oldImageCount; i < data->imageCount; i++)
-        {
-            if (CreateGPUBufferData(rc, physdev, sizeof(Uniform),
-                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                    &newBuf[i]) != VK_SUCCESS)
-            {
-                return false;
-            }
-        }
-        free(*uniformBuffers);
-        *uniformBuffers = newBuf;
-    }
-    *descriptorPool = CreateDescriptorPool(rc, data, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    *descriptorSets = AllocateDescriptorSets(rc, data, *descriptorPool, *uniformBuffers, descriptorSetLayouts, sizeof(Uniform));
     *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
     *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
                                                *renderpass, *pipeline,
                                                *framebuffers, vertexBuffers, offsets,
-                                               indexBuffer, indexOffset, *layout, *descriptorSets);
+                                               indexBuffer, indexOffset, *layout, descriptorSets);
     return true;
 }
 
@@ -793,11 +763,9 @@ int main(int argc, char **argv)
             ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,
                                          &vertexBuffer, offsets,
                                          &indexBuffer, 0,
-                                         &uniformBuffers,
                                          commandPool, vertShader, fragShader,
                                          descriptorSetLayout,
-                                         &descriptorSets,
-                                         &descriptorPool,
+                                         descriptorSets,
                                          &vertexInputInfo, &commandBuffers,
                                          &framebuffers, &pipeline,
                                          &layout, &renderpass);
