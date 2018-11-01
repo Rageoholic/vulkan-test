@@ -127,7 +127,7 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
                                       Uniform *u,
                                       GPUBufferData *uniformBuffers,
                                       GPUBufferData *uniformStagingBuffer,
-                                      VkCommandPool commandPool,
+                                      VkCommandPool bufferCommandPool,
                                       VkCommandBuffer *commandBuffers, VkSemaphore imageSemaphore,
                                       VkSemaphore renderSemaphore, VkFence fence)
 {
@@ -141,7 +141,7 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
     }
     OutputDataToBuffer(rc, uniformStagingBuffer, u, sizeof(*u), 0);
 
-    CopyGPUBuffer(rc, &uniformBuffers[imageIndex], uniformStagingBuffer, sizeof(*u), 0, 0, commandPool);
+    CopyGPUBuffer(rc, &uniformBuffers[imageIndex], uniformStagingBuffer, sizeof(*u), 0, 0, bufferCommandPool);
 
     VkSubmitInfo submitInfo = {0};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -612,7 +612,14 @@ int main(int argc, char **argv)
         return returnValue;
     }
 
-    VkCommandPool commandPool = CreateCommandPool(&rc);
+    VkCommandPool commandPool = CreateCommandPool(&rc, 0);
+    if (commandPool == VK_NULL_HANDLE)
+    {
+        puts("Could not create command pool");
+        return returnValue;
+    }
+
+    VkCommandPool tempCommandPool = CreateCommandPool(&rc, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
     if (commandPool == VK_NULL_HANDLE)
     {
         puts("Could not create command pool");
@@ -642,7 +649,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    CopyGPUBuffer(&rc, &vertexBuffer, &stagingBuffer, sizeof(vertices), 0, 0, commandPool);
+    CopyGPUBuffer(&rc, &vertexBuffer, &stagingBuffer, sizeof(vertices), 0, 0, tempCommandPool);
 
     DestroyGPUBufferInfo(&rc, &stagingBuffer);
 
@@ -667,7 +674,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    CopyGPUBuffer(&rc, &indexBuffer, &stagingBuffer, sizeof(indices), 0, 0, commandPool);
+    CopyGPUBuffer(&rc, &indexBuffer, &stagingBuffer, sizeof(indices), 0, 0, tempCommandPool);
     DestroyGPUBufferInfo(&rc, &stagingBuffer);
 
     GPUBufferData *uniformBuffers = malloc(sizeof(*uniformBuffers) * swapchainData.imageCount);
@@ -828,6 +835,7 @@ int main(int argc, char **argv)
     DestroyGPUBufferInfo(&rc, &indexBuffer);
 
     vkDestroyCommandPool(rc.dev, commandPool, NULL);
+    vkDestroyCommandPool(rc.dev, tempCommandPool, NULL);
 
     DestroyVkRenderContext(&rc);
 

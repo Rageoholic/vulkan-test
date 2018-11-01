@@ -90,7 +90,7 @@ VkRenderPass CreateRenderPass(const VkRenderContext *rc, const VkSwapchainData *
 
 VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainData *data, VkRenderPass renderpass);
 
-VkCommandPool CreateCommandPool(VkRenderContext *rc);
+VkCommandPool CreateCommandPool(VkRenderContext *rc, VkCommandPoolCreateFlags flags);
 
 errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
                         VkSurfaceKHR surf, u32 windowWidth,

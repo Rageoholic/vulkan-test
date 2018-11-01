@@ -203,7 +203,6 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
                         u32 windowHeight, VkSwapchainData *out)
 
 {
-
     SwapChainSupportDetails d = QuerySwapChainSupport(physdev, surf);
     VkSurfaceFormatKHR form = {0};
     if (d.formatCount == 1 && d.formats[0].format == VK_FORMAT_UNDEFINED)
@@ -229,6 +228,7 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
             form = d.formats[0];
         }
     }
+
     VkPresentModeKHR pmode = VK_PRESENT_MODE_FIFO_KHR;
     for (u32 i = 0; i < d.modeCount; i++)
     {
@@ -554,12 +554,14 @@ VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainDa
     return ret;
 }
 
-VkCommandPool CreateCommandPool(VkRenderContext *rc)
+VkCommandPool CreateCommandPool(VkRenderContext *rc, VkCommandPoolCreateFlags flags)
 {
 
     VkCommandPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = rc->indices.graphicsIndex;
+    poolInfo.flags = flags;
+
     VkCommandPool ret;
     if (vkCreateCommandPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
     {
