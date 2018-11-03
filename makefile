@@ -1,4 +1,7 @@
+-include .user.mk		#User defined includes. Use this to configure specific settings on build files
 -include deps.mk
+
+
 
 
 WARNINGS += -Wall -Wextra -Werror -Wno-error=unused-variable			\
@@ -12,7 +15,7 @@ CCFLAGS += $(WARNINGS) --std=c++17 -MD -MP -masm=intel $(OPTFLAGS)
 DEPS += $(shell find . -name "*.d")
 
 
-LDFLAGS += $(LIBS)
+LDFLAGS += $(LIBS) $(OPTFLAGS)
 
 
 ifeq ($(mode),release)
@@ -32,9 +35,8 @@ endif
 
 -include $(DEPS)
 
--include .user.mk		#User defined includes. Use this to configure specific settings on build files
-RUTILS_DIR = rutils/
--include rutils/rutils.mk
+
+
 
 
 %.o: %.cpp

@@ -1,4 +1,5 @@
 #include "vk-basic.h"
+#include "features.h"
 #include "rutils/math.h"
 #include "rutils/string.h"
 #include <string.h>
@@ -25,7 +26,7 @@ VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, VkSurfaceKHR surf,
     return VK_NULL_HANDLE;
 }
 
-bool GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf, VkQueueIndices *indices)
+bool GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf, QueueIndices *indices)
 {
     u32 queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, NULL);
@@ -140,14 +141,14 @@ local VkExtent2D SelectSwapExtent(SwapChainSupportDetails *details, u32 windowWi
     return ret;
 }
 
-errcode CreateVkRenderContext(VkPhysicalDevice physdev,
-                              VkPhysicalDeviceFeatures *df,
-                              VkSurfaceKHR surf,
-                              VkRenderContext *outrc)
+errcode CreateLogicalDevice(VkPhysicalDevice physdev,
+                            VkPhysicalDeviceFeatures *df,
+                            VkSurfaceKHR surf,
+                            LogicalDevice *outld)
 {
-    VkRenderContext rc = {0};
+    LogicalDevice ld = {0};
 
-    VkQueueIndices qi;
+    QueueIndices qi;
     bool support = GetDeviceQueueGraphicsAndPresentationIndices(physdev, surf, &qi);
     if (!support)
     {
@@ -177,30 +178,30 @@ errcode CreateVkRenderContext(VkPhysicalDevice physdev,
     dci.pEnabledFeatures = df;
 
     /* TODO: validation */
-    if (vkCreateDevice(physdev, &dci, NULL, &rc.dev) != VK_SUCCESS)
+    if (vkCreateDevice(physdev, &dci, NULL, &ld.dev) != VK_SUCCESS)
     {
         return ERROR_INITIALIZATION_FAILURE;
     }
-    vkGetDeviceQueue(rc.dev, qi.graphicsIndex, 0, &rc.graphicsQueue);
+    vkGetDeviceQueue(ld.dev, qi.graphicsIndex, 0, &ld.graphicsQueue);
     if (qi.graphicsIndex != qi.presentIndex)
     {
-        vkGetDeviceQueue(rc.dev, qi.presentIndex, 0, &rc.presentQueue);
+        vkGetDeviceQueue(ld.dev, qi.presentIndex, 0, &ld.presentQueue);
     }
     else
     {
-        rc.presentQueue = rc.graphicsQueue;
+        ld.presentQueue = ld.graphicsQueue;
     }
 
-    rc.indices = qi;
+    ld.indices = qi;
 
-    *outrc = rc;
+    *outld = ld;
 
     return ERROR_SUCCESS;
 }
 
-errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
-                        VkSurfaceKHR surf, u32 windowWidth,
-                        u32 windowHeight, VkSwapchainData *out)
+errcode CreateRenderContext(LogicalDevice *ld, VkPhysicalDevice physdev,
+                            VkSurfaceKHR surf, u32 windowWidth,
+                            u32 windowHeight, RenderContext *out)
 
 {
     SwapChainSupportDetails d = QuerySwapChainSupport(physdev, surf);
@@ -230,16 +231,16 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
     }
 
     VkPresentModeKHR pmode = VK_PRESENT_MODE_FIFO_KHR;
-    for (u32 i = 0; i < d.modeCount; i++)
+
+    if (USE_MAILBOX_RENDERER)
     {
-        if (d.presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+        for (u32 i = 0; i < d.modeCount; i++)
         {
-            pmode = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
-        }
-        else if (d.presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
-        {
-            pmode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            if (d.presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            {
+                pmode = VK_PRESENT_MODE_MAILBOX_KHR;
+                break;
+            }
         }
     }
 
@@ -260,9 +261,9 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
     ci.imageExtent = e;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    u32 queueFamilyIndices[2] = {rc->indices.graphicsIndex, rc->indices.presentIndex};
+    u32 queueFamilyIndices[2] = {ld->indices.graphicsIndex, ld->indices.presentIndex};
 
-    if (rc->indices.graphicsIndex == rc->indices.presentIndex)
+    if (ld->indices.graphicsIndex == ld->indices.presentIndex)
     {
         ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ci.queueFamilyIndexCount = 0;
@@ -281,14 +282,14 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = VK_NULL_HANDLE;
 
-    if (vkCreateSwapchainKHR(rc->dev, &ci, NULL, &out->swapchain) != VK_SUCCESS)
+    if (vkCreateSwapchainKHR(ld->dev, &ci, NULL, &out->swapchain) != VK_SUCCESS)
     {
         return ERROR_EXTERNAL_LIB;
     }
 
-    vkGetSwapchainImagesKHR(rc->dev, out->swapchain, &imageCount, NULL);
+    vkGetSwapchainImagesKHR(ld->dev, out->swapchain, &imageCount, NULL);
     out->images = malloc(sizeof(out->images[0]) * imageCount);
-    vkGetSwapchainImagesKHR(rc->dev, out->swapchain, &imageCount, out->images);
+    vkGetSwapchainImagesKHR(ld->dev, out->swapchain, &imageCount, out->images);
     out->imageCount = imageCount;
 
     out->imageViews = malloc(sizeof(out->imageViews[0]) * out->imageCount);
@@ -308,7 +309,7 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
         ivci.subresourceRange.levelCount = 1;
         ivci.subresourceRange.baseArrayLayer = 0;
         ivci.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(rc->dev, &ivci, NULL, &out->imageViews[i]) != VK_SUCCESS)
+        if (vkCreateImageView(ld->dev, &ivci, NULL, &out->imageViews[i]) != VK_SUCCESS)
         {
             free(out->images);
             free(out->imageViews);
@@ -322,23 +323,23 @@ errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
     return ERROR_SUCCESS;
 }
 
-void DestroySwapChainData(VkRenderContext *rc, VkSwapchainData *data)
+void DestroySwapChainData(LogicalDevice *ld, RenderContext *data)
 {
     for (u32 i = 0; i < data->imageCount; i++)
     {
-        vkDestroyImageView(rc->dev, data->imageViews[i], NULL);
+        vkDestroyImageView(ld->dev, data->imageViews[i], NULL);
     }
     free(data->imageViews);
     free(data->images);
-    vkDestroySwapchainKHR(rc->dev, data->swapchain, NULL);
+    vkDestroySwapchainKHR(ld->dev, data->swapchain, NULL);
 }
 
-void DestroyVkRenderContext(VkRenderContext *rc)
+void DestroyLogicalDevice(LogicalDevice *ld)
 {
-    vkDestroyDevice(rc->dev, NULL);
+    vkDestroyDevice(ld->dev, NULL);
 }
 
-VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
+VkShaderModule CreateVkShaderModule(const LogicalDevice *ld,
                                     const void *shaderSource,
                                     usize shaderLen)
 {
@@ -348,15 +349,15 @@ VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
     ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     VkShaderModule mod;
 
-    if (vkCreateShaderModule(rc->dev, &ci, NULL, &mod) != VK_SUCCESS)
+    if (vkCreateShaderModule(ld->dev, &ci, NULL, &mod) != VK_SUCCESS)
     {
         return VK_NULL_HANDLE;
     }
     return mod;
 }
 
-VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
-                                  const VkSwapchainData *data,
+VkPipeline CreateGraphicsPipeline(const LogicalDevice *ld,
+                                  const RenderContext *data,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
@@ -448,7 +449,7 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
     pci.setLayoutCount = descriptorSetsCount;
     pci.pSetLayouts = descriptorSetLayouts;
 
-    if (vkCreatePipelineLayout(rc->dev, &pci, NULL, layout))
+    if (vkCreatePipelineLayout(ld->dev, &pci, NULL, layout))
     {
         return VK_NULL_HANDLE;
     }
@@ -468,18 +469,18 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
     pipelineInfo.subpass = 0;
 
     VkPipeline graphicsPipeline;
-    if (vkCreateGraphicsPipelines(rc->dev, VK_NULL_HANDLE, 1,
+    if (vkCreateGraphicsPipelines(ld->dev, VK_NULL_HANDLE, 1,
                                   &pipelineInfo, NULL, &graphicsPipeline) !=
         VK_SUCCESS)
     {
-        vkDestroyPipelineLayout(rc->dev, *layout, NULL);
+        vkDestroyPipelineLayout(ld->dev, *layout, NULL);
         return VK_NULL_HANDLE;
     }
 
     return graphicsPipeline;
 }
 
-VkRenderPass CreateRenderPass(const VkRenderContext *rc, const VkSwapchainData *data)
+VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data)
 {
     VkAttachmentDescription colorAttachment = {0};
     colorAttachment.format = data->format.format;
@@ -521,14 +522,14 @@ VkRenderPass CreateRenderPass(const VkRenderContext *rc, const VkSwapchainData *
 
     VkRenderPass renderPass;
 
-    if (vkCreateRenderPass(rc->dev, &renderPassInfo, NULL, &renderPass) != VK_SUCCESS)
+    if (vkCreateRenderPass(ld->dev, &renderPassInfo, NULL, &renderPass) != VK_SUCCESS)
     {
         return VK_NULL_HANDLE;
     }
     return renderPass;
 }
 
-VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainData *data, VkRenderPass renderpass)
+VkFramebuffer *CreateFrameBuffers(const LogicalDevice *ld, const RenderContext *data, VkRenderPass renderpass)
 {
     VkFramebuffer *ret = malloc(sizeof(ret[0]) * data->imageCount);
     for (u32 i = 0; i < data->imageCount; i++)
@@ -544,7 +545,7 @@ VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainDa
         fbci.height = data->e.height;
         fbci.layers = 1;
 
-        if (vkCreateFramebuffer(rc->dev, &fbci, NULL, &ret[i]) != VK_SUCCESS)
+        if (vkCreateFramebuffer(ld->dev, &fbci, NULL, &ret[i]) != VK_SUCCESS)
         {
             free(ret);
             return NULL;
@@ -554,16 +555,16 @@ VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainDa
     return ret;
 }
 
-VkCommandPool CreateCommandPool(VkRenderContext *rc, VkCommandPoolCreateFlags flags)
+VkCommandPool CreateCommandPool(LogicalDevice *ld, VkCommandPoolCreateFlags flags)
 {
 
     VkCommandPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolInfo.queueFamilyIndex = rc->indices.graphicsIndex;
+    poolInfo.queueFamilyIndex = ld->indices.graphicsIndex;
     poolInfo.flags = flags;
 
     VkCommandPool ret;
-    if (vkCreateCommandPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
+    if (vkCreateCommandPool(ld->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
     {
         return VK_NULL_HANDLE;
     }
@@ -587,7 +588,7 @@ local bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
     return false;
 }
 
-VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
+VkResult CreateGPUBufferData(LogicalDevice *ld, VkPhysicalDevice physdev,
                              size_t vertexBufferSize,
                              VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                              GPUBufferData *buffer)
@@ -600,14 +601,14 @@ VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
     bufferInfo.usage = usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(rc->dev, &bufferInfo, NULL, &vertexBuffer) != VK_SUCCESS)
+    if (vkCreateBuffer(ld->dev, &bufferInfo, NULL, &vertexBuffer) != VK_SUCCESS)
     {
 
         return ERROR_EXTERNAL_LIB;
     }
 
     VkMemoryRequirements memReq = {0};
-    vkGetBufferMemoryRequirements(rc->dev, vertexBuffer, &memReq);
+    vkGetBufferMemoryRequirements(ld->dev, vertexBuffer, &memReq);
 
     VkMemoryAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -620,24 +621,24 @@ VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
     }
 
     VkDeviceMemory vertexBufferMem;
-    if (vkAllocateMemory(rc->dev, &allocInfo, NULL, &vertexBufferMem) != VK_SUCCESS)
+    if (vkAllocateMemory(ld->dev, &allocInfo, NULL, &vertexBufferMem) != VK_SUCCESS)
     {
 
         return -1;
     }
 
-    vkBindBufferMemory(rc->dev, vertexBuffer, vertexBufferMem, 0);
+    vkBindBufferMemory(ld->dev, vertexBuffer, vertexBufferMem, 0);
     *buffer = (GPUBufferData){vertexBuffer, vertexBufferMem};
     return VK_SUCCESS;
 }
 
-void DestroyGPUBufferInfo(VkRenderContext *rc, GPUBufferData *buffer)
+void DestroyGPUBufferInfo(LogicalDevice *ld, GPUBufferData *buffer)
 {
-    vkDestroyBuffer(rc->dev, buffer->buffer, NULL);
-    vkFreeMemory(rc->dev, buffer->deviceMemory, NULL);
+    vkDestroyBuffer(ld->dev, buffer->buffer, NULL);
+    vkFreeMemory(ld->dev, buffer->deviceMemory, NULL);
 }
 
-void CopyGPUBuffer(VkRenderContext *rc,
+void CopyGPUBuffer(LogicalDevice *ld,
                    GPUBufferData *dest, GPUBufferData *src,
                    VkDeviceSize size, VkDeviceSize offsetDest,
                    VkDeviceSize offsetSrc, VkCommandPool commandPool)
@@ -649,7 +650,7 @@ void CopyGPUBuffer(VkRenderContext *rc,
     allocInfo.commandBufferCount = 1;
 
     VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(rc->dev, &allocInfo, &commandBuffer);
+    vkAllocateCommandBuffers(ld->dev, &allocInfo, &commandBuffer);
 
     VkCommandBufferBeginInfo beginInfo = {0};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -670,13 +671,13 @@ void CopyGPUBuffer(VkRenderContext *rc,
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    vkQueueSubmit(rc->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(rc->graphicsQueue);
+    vkQueueSubmit(ld->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(ld->graphicsQueue);
 
-    vkFreeCommandBuffers(rc->dev, commandPool, 1, &commandBuffer);
+    vkFreeCommandBuffers(ld->dev, commandPool, 1, &commandBuffer);
 }
 
-VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swapchain, VkDescriptorType type)
+VkDescriptorPool CreateDescriptorPool(LogicalDevice *ld, RenderContext *swapchain, VkDescriptorType type)
 {
     VkDescriptorPoolSize poolSize = {0};
     poolSize.type = type;
@@ -689,14 +690,14 @@ VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swap
     poolInfo.maxSets = swapchain->imageCount;
     VkDescriptorPool ret;
 
-    if (vkCreateDescriptorPool(rc->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
+    if (vkCreateDescriptorPool(ld->dev, &poolInfo, NULL, &ret) != VK_SUCCESS)
     {
         return VK_NULL_HANDLE;
     }
     return ret;
 }
 
-VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *data,
+VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *data,
                                         VkDescriptorPool descriptorPool,
                                         GPUBufferData *buffers, VkDescriptorSetLayout layout,
                                         VkDeviceSize typeSize)
@@ -713,7 +714,7 @@ VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *da
     allocInfo.descriptorSetCount = data->imageCount;
     allocInfo.pSetLayouts = descriptorSetLayouts;
 
-    if (vkAllocateDescriptorSets(rc->dev, &allocInfo, ret) != VK_SUCCESS)
+    if (vkAllocateDescriptorSets(ld->dev, &allocInfo, ret) != VK_SUCCESS)
     {
         puts("Could not allocate descriptor sets");
         return NULL;
@@ -735,7 +736,7 @@ VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *da
         descriptorWrite.descriptorCount = 1;
         descriptorWrite.pBufferInfo = &bufferInfo;
 
-        vkUpdateDescriptorSets(rc->dev, 1, &descriptorWrite, 0, NULL);
+        vkUpdateDescriptorSets(ld->dev, 1, &descriptorWrite, 0, NULL);
     }
     return ret;
 }

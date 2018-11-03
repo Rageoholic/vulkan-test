@@ -5,21 +5,21 @@
 #include <string.h>
 #include <vulkan/vulkan.h>
 
-typedef struct VkQueueIndices
+typedef struct QueueIndices
 {
     u32 graphicsIndex;
     u32 presentIndex;
-} VkQueueIndices;
+} QueueIndices;
 
-typedef struct VkRenderContext
+typedef struct LogicalDevice
 {
     VkDevice dev;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
-    VkQueueIndices indices;
-} VkRenderContext;
+    QueueIndices indices;
+} LogicalDevice;
 
-typedef struct VkSwapchainData
+typedef struct RenderContext
 {
     VkSwapchainKHR swapchain;
     u32 imageCount;
@@ -28,7 +28,7 @@ typedef struct VkSwapchainData
     VkExtent2D e;
     VkSurfaceFormatKHR format;
 
-} VkSwapchainData;
+} RenderContext;
 
 typedef struct SwapChainSupportDetails
 {
@@ -55,7 +55,7 @@ VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, VkSurfaceKHR surf,
                                      size_t numExpectedExtensions,
                                      SuitableDeviceCheck checkFun);
 
-bool GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf, VkQueueIndices *indices);
+bool GetDeviceQueueGraphicsAndPresentationIndices(VkPhysicalDevice dev, VkSurfaceKHR surf, QueueIndices *indices);
 
 bool CheckDeviceExtensionSupport(VkPhysicalDevice dev,
                                  const char **extensionList,
@@ -65,19 +65,19 @@ SwapChainSupportDetails QuerySwapChainSupport(VkPhysicalDevice dev, VkSurfaceKHR
 
 void DeleteSwapChainSupportDetails(SwapChainSupportDetails details);
 
-errcode CreateVkRenderContext(VkPhysicalDevice physdev,
-                              VkPhysicalDeviceFeatures *df,
-                              VkSurfaceKHR surf,
-                              VkRenderContext *outrc);
+errcode CreateLogicalDevice(VkPhysicalDevice physdev,
+                            VkPhysicalDeviceFeatures *df,
+                            VkSurfaceKHR surf,
+                            LogicalDevice *outld);
 
-void DestroyVkRenderContext(VkRenderContext *rc);
+void DestroyLogicalDevice(LogicalDevice *ld);
 
-VkShaderModule CreateVkShaderModule(const VkRenderContext *rc,
+VkShaderModule CreateVkShaderModule(const LogicalDevice *ld,
                                     const void *shaderSource,
                                     usize shaderLen);
 
-VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
-                                  const VkSwapchainData *data,
+VkPipeline CreateGraphicsPipeline(const LogicalDevice *ld,
+                                  const RenderContext *rc,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
@@ -86,40 +86,40 @@ VkPipeline CreateGraphicsPipeline(const VkRenderContext *rc,
                                   VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
                                   VkPipelineLayout *layout);
 
-VkRenderPass CreateRenderPass(const VkRenderContext *rc, const VkSwapchainData *data);
+VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *rc);
 
-VkFramebuffer *CreateFrameBuffers(const VkRenderContext *rc, const VkSwapchainData *data, VkRenderPass renderpass);
+VkFramebuffer *CreateFrameBuffers(const LogicalDevice *ld, const RenderContext *rc, VkRenderPass renderpass);
 
-VkCommandPool CreateCommandPool(VkRenderContext *rc, VkCommandPoolCreateFlags flags);
+VkCommandPool CreateCommandPool(LogicalDevice *ld, VkCommandPoolCreateFlags flags);
 
-errcode CreateSwapchain(VkRenderContext *rc, VkPhysicalDevice physdev,
-                        VkSurfaceKHR surf, u32 windowWidth,
-                        u32 windowHeight, VkSwapchainData *out);
+errcode CreateRenderContext(LogicalDevice *ld, VkPhysicalDevice physdev,
+                            VkSurfaceKHR surf, u32 windowWidth,
+                            u32 windowHeight, RenderContext *out);
 
-void DestroySwapChainData(VkRenderContext *rc, VkSwapchainData *data);
+void DestroySwapChainData(LogicalDevice *ld, RenderContext *rc);
 
-VkResult CreateGPUBufferData(VkRenderContext *rc, VkPhysicalDevice physdev,
+VkResult CreateGPUBufferData(LogicalDevice *ld, VkPhysicalDevice physdev,
                              size_t vertexBufferSize,
                              VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                              GPUBufferData *buffer);
 
-void DestroyGPUBufferInfo(VkRenderContext *rc, GPUBufferData *buffer);
+void DestroyGPUBufferInfo(LogicalDevice *ld, GPUBufferData *buffer);
 
-local void OutputDataToBuffer(VkRenderContext *rc, GPUBufferData *buffer, void *data, size_t dataLen, size_t offset)
+local void OutputDataToBuffer(LogicalDevice *ld, GPUBufferData *buffer, void *data, size_t dataLen, size_t offset)
 {
     void *bufp;
-    vkMapMemory(rc->dev, buffer->deviceMemory, offset, dataLen, 0, &bufp);
+    vkMapMemory(ld->dev, buffer->deviceMemory, offset, dataLen, 0, &bufp);
     memcpy(bufp, data, dataLen);
-    vkUnmapMemory(rc->dev, buffer->deviceMemory);
+    vkUnmapMemory(ld->dev, buffer->deviceMemory);
 }
 
-void CopyGPUBuffer(VkRenderContext *rc,
+void CopyGPUBuffer(LogicalDevice *ld,
                    GPUBufferData *dest, GPUBufferData *src,
                    VkDeviceSize size, VkDeviceSize offsetDest,
                    VkDeviceSize offsetSrc, VkCommandPool commandPool);
-VkDescriptorPool CreateDescriptorPool(VkRenderContext *rc, VkSwapchainData *swapchain, VkDescriptorType type);
+VkDescriptorPool CreateDescriptorPool(LogicalDevice *ld, RenderContext *swapchain, VkDescriptorType type);
 
-VkDescriptorSet *AllocateDescriptorSets(VkRenderContext *rc, VkSwapchainData *data,
+VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *rc,
                                         VkDescriptorPool descriptorPool,
                                         GPUBufferData *buffers, VkDescriptorSetLayout layout,
                                         VkDeviceSize typeSize);

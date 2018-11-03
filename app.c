@@ -41,6 +41,14 @@ typedef struct Uniform
     Mat4f proj;
 } Uniform;
 
+typedef struct Semaphores
+{
+    VkSemaphore *imageAvailableSemaphores;
+    VkSemaphore *renderFinishedSemaphores;
+    VkFence *fences;
+    u32 count;
+} Semaphores;
+
 local Vertex vertices[] = {
     {{-0.5, -0.5}, {1, 0, 0}},
     {{.5, -.5}, {0, 1, 0}},
@@ -50,28 +58,28 @@ local u16 indices[] = {0, 1, 2, 2, 3, 0};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
-local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwapchainData *data,
+local VkCommandBuffer *ApplicationSetupCommandBuffers(LogicalDevice *ld, RenderContext *rc,
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
                                                       VkPipeline graphicsPipeline, VkFramebuffer *framebuffers,
                                                       GPUBufferData *vertexBuffer, VkDeviceSize *offsets,
                                                       GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
                                                       VkPipelineLayout pipelineLayout, VkDescriptorSet *descriptorSets)
 {
-    VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * data->imageCount);
+    VkCommandBuffer *ret = malloc(sizeof(VkCommandBuffer) * rc->imageCount);
 
     VkCommandBufferAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = data->imageCount;
+    allocInfo.commandBufferCount = rc->imageCount;
 
-    if (vkAllocateCommandBuffers(rc->dev, &allocInfo, ret) != VK_SUCCESS)
+    if (vkAllocateCommandBuffers(ld->dev, &allocInfo, ret) != VK_SUCCESS)
     {
         free(ret);
         return NULL;
     }
 
-    for (u32 i = 0; i < data->imageCount; i++)
+    for (u32 i = 0; i < rc->imageCount; i++)
     {
         VkCommandBufferBeginInfo beginInfo = {0};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -88,7 +96,7 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
         renderPassInfo.renderPass = renderpass;
         renderPassInfo.framebuffer = framebuffers[i];
         renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
-        renderPassInfo.renderArea.extent = data->e;
+        renderPassInfo.renderArea.extent = rc->e;
 
         VkClearValue clearColor = {.1f, .1f, .1f, 1};
         renderPassInfo.clearValueCount = 1;
@@ -115,15 +123,7 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(VkRenderContext *rc, VkSwa
     return ret;
 }
 
-typedef struct Semaphores
-{
-    VkSemaphore *imageAvailableSemaphores;
-    VkSemaphore *renderFinishedSemaphores;
-    VkFence *fences;
-    u32 count;
-} Semaphores;
-
-local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data,
+local DrawResult ApplicationDrawImage(LogicalDevice *ld, RenderContext *rc,
                                       Uniform *u,
                                       GPUBufferData *uniformBuffers,
                                       GPUBufferData *uniformStagingBuffer,
@@ -131,17 +131,17 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
                                       VkCommandBuffer *commandBuffers, VkSemaphore imageSemaphore,
                                       VkSemaphore renderSemaphore, VkFence fence)
 {
-    vkWaitForFences(rc->dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkWaitForFences(ld->dev, 1, &fence, VK_TRUE, UINT64_MAX);
 
     u32 imageIndex;
-    VkResult result = vkAcquireNextImageKHR(rc->dev, data->swapchain, UINT64_MAX, imageSemaphore, NULL, &imageIndex);
+    VkResult result = vkAcquireNextImageKHR(ld->dev, rc->swapchain, UINT64_MAX, imageSemaphore, NULL, &imageIndex);
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
         return SWAP_CHAIN_OUT_OF_DATE;
     }
-    OutputDataToBuffer(rc, uniformStagingBuffer, u, sizeof(*u), 0);
+    OutputDataToBuffer(ld, uniformStagingBuffer, u, sizeof(*u), 0);
 
-    CopyGPUBuffer(rc, &uniformBuffers[imageIndex], uniformStagingBuffer, sizeof(*u), 0, 0, bufferCommandPool);
+    CopyGPUBuffer(ld, &uniformBuffers[imageIndex], uniformStagingBuffer, sizeof(*u), 0, 0, bufferCommandPool);
 
     VkSubmitInfo submitInfo = {0};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -156,9 +156,9 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
 
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &renderSemaphore;
-    vkResetFences(rc->dev, 1, &fence);
+    vkResetFences(ld->dev, 1, &fence);
 
-    if (vkQueueSubmit(rc->graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS)
+    if (vkQueueSubmit(ld->graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS)
     {
         return NO_SUBMIT;
     }
@@ -169,10 +169,10 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
     presentInfo.pWaitSemaphores = &renderSemaphore;
 
     presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &data->swapchain;
+    presentInfo.pSwapchains = &rc->swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
-    result = vkQueuePresentKHR(rc->presentQueue, &presentInfo);
+    result = vkQueuePresentKHR(ld->presentQueue, &presentInfo);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
@@ -181,7 +181,7 @@ local DrawResult ApplicationDrawImage(VkRenderContext *rc, VkSwapchainData *data
     return NO_ERROR;
 }
 
-local bool ApplicationCreateSemaphores(VkRenderContext *rc, Semaphores *out, u32 semaphoreCount)
+local bool ApplicationCreateSemaphores(LogicalDevice *rc, Semaphores *out, u32 semaphoreCount)
 {
     out->count = semaphoreCount;
     out->imageAvailableSemaphores = malloc(sizeof(out->imageAvailableSemaphores[0]) * semaphoreCount);
@@ -300,8 +300,19 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
                                  const char **extensionList,
                                  size_t extensionCount)
 {
-    VkQueueIndices qindices;
+    QueueIndices qindices;
     bool properIndices = GetDeviceQueueGraphicsAndPresentationIndices(dev, surf, &qindices);
+
+    VkPhysicalDeviceProperties devProps;
+
+    vkGetPhysicalDeviceProperties(dev, &devProps);
+
+    if (!(devProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
+          devProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU))
+    {
+        return false;
+    }
+
     if (properIndices &&
         CheckDeviceExtensionSupport(dev, extensionList, extensionCount))
     {
@@ -315,63 +326,63 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
     return false;
 }
 
-local void ApplicationDestroySwapchainAndRelatedData(VkRenderContext *rc, VkSwapchainData *data,
-                                                     VkCommandPool cpool,
-                                                     VkCommandBuffer *cbuffers,
-                                                     VkFramebuffer *framebuffers,
-                                                     VkPipeline pipeline, VkPipelineLayout layout,
-                                                     VkRenderPass renderpass)
+local void ApplicationDestroyRenderContextAndRelatedData(LogicalDevice *ld, RenderContext *rc,
+                                                         VkCommandPool cpool,
+                                                         VkCommandBuffer *cbuffers,
+                                                         VkFramebuffer *framebuffers,
+                                                         VkPipeline pipeline, VkPipelineLayout layout,
+                                                         VkRenderPass renderpass)
 {
-    for (u32 i = 0; i < data->imageCount; i++)
+    for (u32 i = 0; i < rc->imageCount; i++)
     {
-        vkDestroyFramebuffer(rc->dev, framebuffers[i], NULL);
+        vkDestroyFramebuffer(ld->dev, framebuffers[i], NULL);
     }
     free(framebuffers);
-    vkFreeCommandBuffers(rc->dev, cpool, data->imageCount, cbuffers);
+    vkFreeCommandBuffers(ld->dev, cpool, rc->imageCount, cbuffers);
     free(cbuffers);
-    vkDestroyPipeline(rc->dev, pipeline, NULL);
-    vkDestroyPipelineLayout(rc->dev, layout, NULL);
-    vkDestroyRenderPass(rc->dev, renderpass, NULL);
-    DestroySwapChainData(rc, data);
+    vkDestroyPipeline(ld->dev, pipeline, NULL);
+    vkDestroyPipelineLayout(ld->dev, layout, NULL);
+    vkDestroyRenderPass(ld->dev, renderpass, NULL);
+    DestroySwapChainData(ld, rc);
 }
 
-local bool ApplicationRecreateSwapchain(VkRenderContext *rc, VkSwapchainData *data, GLFWwindow *win,
-                                        VkPhysicalDevice physdev, VkSurfaceKHR surf,
-                                        GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
-                                        GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
-                                        VkCommandPool cpool,
-                                        VkShaderModule vertShader, VkShaderModule fragShader,
-                                        VkDescriptorSetLayout descriptorSetLayouts,
-                                        VkDescriptorSet *descriptorSets,
-                                        VkPipelineVertexInputStateCreateInfo *inputInfo,
-                                        VkCommandBuffer **cbuffers,
-                                        VkFramebuffer **framebuffers,
-                                        VkPipeline *pipeline, VkPipelineLayout *layout,
-                                        VkRenderPass *renderpass)
+local bool ApplicationRecreateRenderContextData(LogicalDevice *ld, RenderContext *rc, GLFWwindow *win,
+                                                VkPhysicalDevice physdev, VkSurfaceKHR surf,
+                                                GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
+                                                GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
+                                                VkCommandPool cpool,
+                                                VkShaderModule vertShader, VkShaderModule fragShader,
+                                                VkDescriptorSetLayout descriptorSetLayouts,
+                                                VkDescriptorSet *descriptorSets,
+                                                VkPipelineVertexInputStateCreateInfo *inputInfo,
+                                                VkCommandBuffer **cbuffers,
+                                                VkFramebuffer **framebuffers,
+                                                VkPipeline *pipeline, VkPipelineLayout *layout,
+                                                VkRenderPass *renderpass)
 {
     if (PROFILING)
     {
         puts("RECREATE SWAPCHAIN");
     }
-    vkDeviceWaitIdle(rc->dev);
-    ApplicationDestroySwapchainAndRelatedData(rc, data, cpool, *cbuffers,
-                                              *framebuffers, *pipeline, *layout,
-                                              *renderpass);
+    vkDeviceWaitIdle(ld->dev);
+    ApplicationDestroyRenderContextAndRelatedData(ld, rc, cpool, *cbuffers,
+                                                  *framebuffers, *pipeline, *layout,
+                                                  *renderpass);
     int wwidth, wheight;
     glfwGetWindowSize(win, &wwidth, &wheight);
-    if (CreateSwapchain(rc, physdev, surf, wwidth, wheight, data) != ERROR_SUCCESS)
+    if (CreateRenderContext(ld, physdev, surf, wwidth, wheight, rc) != ERROR_SUCCESS)
     {
         return false;
     }
-    *renderpass = CreateRenderPass(rc, data);
-    *pipeline = CreateGraphicsPipeline(rc, data,
+    *renderpass = CreateRenderPass(ld, rc);
+    *pipeline = CreateGraphicsPipeline(ld, rc,
                                        vertShader, fragShader,
                                        *renderpass,
                                        &descriptorSetLayouts, 1,
                                        inputInfo, layout);
 
-    *framebuffers = CreateFrameBuffers(rc, data, *renderpass);
-    *cbuffers = ApplicationSetupCommandBuffers(rc, data, cpool,
+    *framebuffers = CreateFrameBuffers(ld, rc, *renderpass);
+    *cbuffers = ApplicationSetupCommandBuffers(ld, rc, cpool,
                                                *renderpass, *pipeline,
                                                *framebuffers, vertexBuffers, offsets,
                                                indexBuffer, indexOffset, *layout, descriptorSets);
@@ -495,9 +506,9 @@ int main(int argc, char **argv)
     }
 
     VkPhysicalDeviceFeatures features = {0};
-    VkRenderContext rc;
-    if (CreateVkRenderContext(physdev, &features, surf,
-                              &rc) != ERROR_SUCCESS)
+    LogicalDevice rc;
+    if (CreateLogicalDevice(physdev, &features, surf,
+                            &rc) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE DEVICE");
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -507,8 +518,8 @@ int main(int argc, char **argv)
     int wwidth, wheight;
     glfwGetWindowSize(win, &wwidth, &wheight);
 
-    VkSwapchainData swapchainData = {0};
-    if (CreateSwapchain(&rc, physdev, surf, wwidth, wheight, &swapchainData) != ERROR_SUCCESS)
+    RenderContext swapchainData = {0};
+    if (CreateRenderContext(&rc, physdev, surf, wwidth, wheight, &swapchainData) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE SWAPCHAIN");
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -767,15 +778,15 @@ int main(int argc, char **argv)
 
         if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
-            ApplicationRecreateSwapchain(&rc, &swapchainData, win, physdev, surf,
-                                         &vertexBuffer, offsets,
-                                         &indexBuffer, 0,
-                                         commandPool, vertShader, fragShader,
-                                         descriptorSetLayout,
-                                         descriptorSets,
-                                         &vertexInputInfo, &commandBuffers,
-                                         &framebuffers, &pipeline,
-                                         &layout, &renderpass);
+            ApplicationRecreateRenderContextData(&rc, &swapchainData, win, physdev, surf,
+                                                 &vertexBuffer, offsets,
+                                                 &indexBuffer, 0,
+                                                 commandPool, vertShader, fragShader,
+                                                 descriptorSetLayout,
+                                                 descriptorSets,
+                                                 &vertexInputInfo, &commandBuffers,
+                                                 &framebuffers, &pipeline,
+                                                 &layout, &renderpass);
             resizeOccurred = false;
         }
 
@@ -794,7 +805,9 @@ int main(int argc, char **argv)
                 timePassed = 1000000000 - start.tv_nsec + end.tv_nsec;
             }
             timePassed /= 1000;
-            printf("frame %10" PRIu32 " took %6ld microseconds\n", frameCount, timePassed);
+            double frameEndTime = glfwGetTime();
+            printf("frame %10" PRIu32 " took %f milliseconds\n",
+                   frameCount, (frameEndTime - frameStartTime) * 1000);
         }
     }
 
@@ -804,6 +817,7 @@ int main(int argc, char **argv)
 
     vkDeviceWaitIdle(rc.dev);
     /* Cleanup */
+
     vkDestroyDescriptorPool(rc.dev, descriptorPool, NULL);
 
     vkDestroyShaderModule(rc.dev, vertShader, NULL);
@@ -820,9 +834,9 @@ int main(int argc, char **argv)
     free(s.fences);
     u32 imageCount = swapchainData.imageCount;
 
-    ApplicationDestroySwapchainAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
-                                              framebuffers, pipeline, layout,
-                                              renderpass);
+    ApplicationDestroyRenderContextAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
+                                                  framebuffers, pipeline, layout,
+                                                  renderpass);
 
     vkDestroyDescriptorSetLayout(rc.dev, descriptorSetLayout, NULL);
     for (u32 i = 0; i < imageCount; i++)
@@ -837,7 +851,7 @@ int main(int argc, char **argv)
     vkDestroyCommandPool(rc.dev, commandPool, NULL);
     vkDestroyCommandPool(rc.dev, tempCommandPool, NULL);
 
-    DestroyVkRenderContext(&rc);
+    DestroyLogicalDevice(&rc);
 
     vkDestroySurfaceKHR(instance, surf, NULL);
     if (callback != VK_NULL_HANDLE)

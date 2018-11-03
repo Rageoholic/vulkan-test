@@ -11,7 +11,7 @@ LDFLAGS += -lglfw -lvulkan -lm
 
 CFLAGS += -g
 all: app $(VERT_SHADER_TARGETS) $(FRAG_SHADER_TARGETS)
-app: app.o vk-basic.o rutils.a
+app: app.o vk-basic.o rutils/math.o rutils/file.o rutils/string.o
 
 shaders/%.vert.spv: shaders/%.vert
 	glslangValidator -V $< -o $@
@@ -19,4 +19,4 @@ shaders/%.vert.spv: shaders/%.vert
 shaders/%.frag.spv: shaders/%.frag
 	glslangValidator -V $< -o $@
 
-sample: sample.o rutils.a
+sample: sample.o $(RUTILS)
