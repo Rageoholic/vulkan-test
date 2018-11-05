@@ -4,9 +4,11 @@
 #define _POSIX_C_SOURCE (199309L)
 
 #include "features.h"
+#include "rutils/debug.h"
 #include "rutils/file.h"
 #include "rutils/math.h"
 #include "rutils/string.h"
+#include "stb_image.h"
 #include "vk-basic.h"
 #include <GLFW/glfw3.h>
 #include <limits.h>
@@ -49,6 +51,15 @@ typedef struct Semaphores
     u32 count;
 } Semaphores;
 
+typedef struct Texture
+{
+    VkImage image;
+    VkDeviceMemory texMem;
+    u32 x;
+    u32 y;
+    int bytesPerPixel;
+} Texture;
+
 local Vertex vertices[] = {
     {{-0.5, -0.5}, {1, 0, 0}},
     {{.5, -.5}, {0, 1, 0}},
@@ -57,6 +68,199 @@ local Vertex vertices[] = {
 local u16 indices[] = {0, 1, 2, 2, 3, 0};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
+
+local VkCommandBuffer BeginSingleTimeCommandBuffer(LogicalDevice *ld, VkCommandPool commandPool)
+{
+    VkCommandBufferAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(ld->dev, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo = {0};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    return commandBuffer;
+}
+
+local void EndSingleTimeCommandBuffer(LogicalDevice *ld, VkCommandPool commandPool, VkCommandBuffer commandBuffer)
+{
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo = {0};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(ld->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(ld->graphicsQueue);
+
+    vkFreeCommandBuffers(ld->dev, commandPool, 1, &commandBuffer);
+}
+local void CopyBufferToImage(LogicalDevice *ld, VkCommandPool bufferCommandPool, GPUBufferData *texBuf, Texture *tex)
+{
+    VkCommandBuffer commandBuffer = BeginSingleTimeCommandBuffer(ld, bufferCommandPool);
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+
+    region.imageOffset = (VkOffset3D){0, 0, 0};
+    region.imageExtent = (VkExtent3D){tex->x,
+                                      tex->y,
+                                      1};
+
+    vkCmdCopyBufferToImage(commandBuffer, texBuf->buffer, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    EndSingleTimeCommandBuffer(ld, bufferCommandPool, commandBuffer);
+}
+
+local void TransitionImageLayout(LogicalDevice *ld, VkCommandPool commandPool, VkImage image, VkFormat format,
+                                 VkImageLayout oldLayout, VkImageLayout newLayout)
+{
+    ignore format;
+    VkCommandBuffer commandBuffer = BeginSingleTimeCommandBuffer(ld, commandPool);
+    {
+        VkImageMemoryBarrier barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = newLayout;
+
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = 0;
+
+        VkPipelineStageFlags sourceStage;
+        VkPipelineStageFlags destinationStage;
+
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else
+        {
+            ERROR("Invalid state transition");
+        }
+
+        vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, NULL, 0, 0, 1, &barrier);
+    }
+    EndSingleTimeCommandBuffer(ld, commandPool, commandBuffer);
+}
+
+local errcode LoadTexture(LogicalDevice *ld, VkPhysicalDevice physdev,
+                          const char *path, VkCommandPool bufferCommandPool,
+                          Texture *tex)
+{
+    int x, y;
+    void *image = stbi_load(path, &x, &y, &tex->bytesPerPixel, STBI_rgb_alpha);
+
+    tex->x = x;
+    tex->y = y;
+    size_t imageSize = tex->x * tex->y * 4;
+
+    if (!image)
+    {
+        return ERROR_NO_MEMORY;
+    }
+
+    GPUBufferData texBuf;
+
+    if (CreateGPUBufferData(ld, physdev, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                            &texBuf) != VK_SUCCESS)
+    {
+        return ERROR_NO_MEMORY;
+    }
+
+    OutputDataToBuffer(ld, &texBuf, image, imageSize, 0);
+
+    VkImageCreateInfo imageInfo = {0};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = tex->x;
+    imageInfo.extent.height = tex->y;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(ld->dev, &imageInfo, NULL, &tex->image) != VK_SUCCESS)
+    {
+        return ERROR_EXTERNAL_LIB;
+    }
+
+    VkMemoryRequirements memReq = {0};
+    vkGetImageMemoryRequirements(ld->dev, tex->image, &memReq);
+
+    VkMemoryAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    if (!FindMemoryType(physdev, memReq.memoryTypeBits,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        &allocInfo.memoryTypeIndex))
+    {
+        return ERROR_EXTERNAL_LIB;
+    }
+
+    if (vkAllocateMemory(ld->dev, &allocInfo, NULL, &tex->texMem))
+    {
+        return ERROR_EXTERNAL_LIB;
+    }
+
+    vkBindImageMemory(ld->dev, tex->image, tex->texMem, 0);
+
+    TransitionImageLayout(ld, bufferCommandPool, tex->image,
+                          VK_FORMAT_R8G8B8A8_UNORM,
+                          VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    CopyBufferToImage(ld, bufferCommandPool, &texBuf, tex);
+
+    TransitionImageLayout(ld, bufferCommandPool, tex->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    DestroyGPUBufferInfo(ld, &texBuf);
+
+    return ERROR_SUCCESS;
+}
 
 local VkCommandBuffer *ApplicationSetupCommandBuffers(LogicalDevice *ld, RenderContext *rc,
                                                       VkCommandPool commandPool, VkRenderPass renderpass,
@@ -181,7 +385,7 @@ local DrawResult ApplicationDrawImage(LogicalDevice *ld, RenderContext *rc,
     return NO_ERROR;
 }
 
-local bool ApplicationCreateSemaphores(LogicalDevice *rc, Semaphores *out, u32 semaphoreCount)
+local bool ApplicationCreateSemaphores(LogicalDevice *ld, Semaphores *out, u32 semaphoreCount)
 {
     out->count = semaphoreCount;
     out->imageAvailableSemaphores = malloc(sizeof(out->imageAvailableSemaphores[0]) * semaphoreCount);
@@ -197,19 +401,19 @@ local bool ApplicationCreateSemaphores(LogicalDevice *rc, Semaphores *out, u32 s
 
     for (u32 i = 0; i < semaphoreCount; i++)
     {
-        if (vkCreateSemaphore(rc->dev, &semaphoreInfo, NULL,
+        if (vkCreateSemaphore(ld->dev, &semaphoreInfo, NULL,
                               &out->imageAvailableSemaphores[i]) != VK_SUCCESS)
         {
             return false;
         }
 
-        if (vkCreateSemaphore(rc->dev, &semaphoreInfo, NULL,
+        if (vkCreateSemaphore(ld->dev, &semaphoreInfo, NULL,
                               &out->renderFinishedSemaphores[i]) != VK_SUCCESS)
         {
             return false;
         }
 
-        if (vkCreateFence(rc->dev, &fenceInfo, NULL, &out->fences[i]) != VK_SUCCESS)
+        if (vkCreateFence(ld->dev, &fenceInfo, NULL, &out->fences[i]) != VK_SUCCESS)
         {
             return false;
         }
@@ -400,7 +604,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
     ignore userData;
     if (!streq(callbackData->pMessage, "Added messenger"))
     {
-        fprintf(stderr, "validation layer: %s\n", callbackData->pMessage);
+        fprintf(stderr, "validation layer: %s\n\n", callbackData->pMessage);
     }
     return VK_FALSE;
 }
@@ -506,9 +710,9 @@ int main(int argc, char **argv)
     }
 
     VkPhysicalDeviceFeatures features = {0};
-    LogicalDevice rc;
+    LogicalDevice ld;
     if (CreateLogicalDevice(physdev, &features, surf,
-                            &rc) != ERROR_SUCCESS)
+                            &ld) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE DEVICE");
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -518,8 +722,8 @@ int main(int argc, char **argv)
     int wwidth, wheight;
     glfwGetWindowSize(win, &wwidth, &wheight);
 
-    RenderContext swapchainData = {0};
-    if (CreateRenderContext(&rc, physdev, surf, wwidth, wheight, &swapchainData) != ERROR_SUCCESS)
+    RenderContext rc = {0};
+    if (CreateRenderContext(&ld, physdev, surf, wwidth, wheight, &rc) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE SWAPCHAIN");
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -533,7 +737,7 @@ int main(int argc, char **argv)
         puts("Could not find vertex shader");
     }
 
-    VkShaderModule vertShader = CreateVkShaderModule(&rc, vertShaderCode, vertShaderSize - 1);
+    VkShaderModule vertShader = CreateVkShaderModule(&ld, vertShaderCode, vertShaderSize - 1);
     if (vertShader == VK_NULL_HANDLE)
     {
         puts("Could not load vertex shader");
@@ -547,14 +751,14 @@ int main(int argc, char **argv)
         puts("Could not find fragment shader");
     }
 
-    VkShaderModule fragShader = CreateVkShaderModule(&rc, fragShaderCode, fragShaderSize - 1);
+    VkShaderModule fragShader = CreateVkShaderModule(&ld, fragShaderCode, fragShaderSize - 1);
     if (fragShader == VK_NULL_HANDLE)
     {
         puts("Could not load fragment shader");
     }
     UnmapMappedBuffer(fragShaderCode, fragShaderSize);
 
-    VkRenderPass renderpass = CreateRenderPass(&rc, &swapchainData);
+    VkRenderPass renderpass = CreateRenderPass(&ld, &rc);
     if (renderpass == VK_NULL_HANDLE)
     {
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -597,14 +801,14 @@ int main(int argc, char **argv)
     layoutInfo.pBindings = &uboLayoutBinding;
     VkDescriptorSetLayout descriptorSetLayout;
 
-    if (vkCreateDescriptorSetLayout(rc.dev, &layoutInfo, NULL, &descriptorSetLayout) != VK_SUCCESS)
+    if (vkCreateDescriptorSetLayout(ld.dev, &layoutInfo, NULL, &descriptorSetLayout) != VK_SUCCESS)
     {
         puts("Error. Could not make descriptor set layout");
         return 1;
     }
 
     VkPipelineLayout layout;
-    VkPipeline pipeline = CreateGraphicsPipeline(&rc, &swapchainData,
+    VkPipeline pipeline = CreateGraphicsPipeline(&ld, &rc,
                                                  vertShader, fragShader, renderpass,
                                                  &descriptorSetLayout, 1,
                                                  &vertexInputInfo,
@@ -616,21 +820,21 @@ int main(int argc, char **argv)
         return returnValue;
     }
 
-    VkFramebuffer *framebuffers = CreateFrameBuffers(&rc, &swapchainData, renderpass);
+    VkFramebuffer *framebuffers = CreateFrameBuffers(&ld, &rc, renderpass);
     if (framebuffers == NULL)
     {
         puts("Could not create framebuffer");
         return returnValue;
     }
 
-    VkCommandPool commandPool = CreateCommandPool(&rc, 0);
+    VkCommandPool commandPool = CreateCommandPool(&ld, 0);
     if (commandPool == VK_NULL_HANDLE)
     {
         puts("Could not create command pool");
         return returnValue;
     }
 
-    VkCommandPool tempCommandPool = CreateCommandPool(&rc, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
+    VkCommandPool tempCommandPool = CreateCommandPool(&ld, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
     if (commandPool == VK_NULL_HANDLE)
     {
         puts("Could not create command pool");
@@ -639,7 +843,7 @@ int main(int argc, char **argv)
 
     GPUBufferData stagingBuffer;
 
-    if (CreateGPUBufferData(&rc, physdev, sizeof(vertices),
+    if (CreateGPUBufferData(&ld, physdev, sizeof(vertices),
                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             &stagingBuffer) != VK_SUCCESS)
@@ -648,10 +852,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    OutputDataToBuffer(&rc, &stagingBuffer, vertices, sizeof(vertices), 0);
+    OutputDataToBuffer(&ld, &stagingBuffer, vertices, sizeof(vertices), 0);
 
     GPUBufferData vertexBuffer;
-    if (CreateGPUBufferData(&rc, physdev, sizeof(vertices),
+    if (CreateGPUBufferData(&ld, physdev, sizeof(vertices),
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vertexBuffer) !=
         VK_SUCCESS)
@@ -660,11 +864,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    CopyGPUBuffer(&rc, &vertexBuffer, &stagingBuffer, sizeof(vertices), 0, 0, tempCommandPool);
+    CopyGPUBuffer(&ld, &vertexBuffer, &stagingBuffer, sizeof(vertices), 0, 0, tempCommandPool);
 
-    DestroyGPUBufferInfo(&rc, &stagingBuffer);
+    DestroyGPUBufferInfo(&ld, &stagingBuffer);
 
-    if (CreateGPUBufferData(&rc, physdev, sizeof(indices),
+    if (CreateGPUBufferData(&ld, physdev, sizeof(indices),
                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             &stagingBuffer) != VK_SUCCESS)
@@ -673,10 +877,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    OutputDataToBuffer(&rc, &stagingBuffer, indices, sizeof(indices), 0);
+    OutputDataToBuffer(&ld, &stagingBuffer, indices, sizeof(indices), 0);
 
     GPUBufferData indexBuffer;
-    if (CreateGPUBufferData(&rc, physdev, sizeof(indices),
+    if (CreateGPUBufferData(&ld, physdev, sizeof(indices),
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &indexBuffer) !=
         VK_SUCCESS)
@@ -685,14 +889,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    CopyGPUBuffer(&rc, &indexBuffer, &stagingBuffer, sizeof(indices), 0, 0, tempCommandPool);
-    DestroyGPUBufferInfo(&rc, &stagingBuffer);
+    CopyGPUBuffer(&ld, &indexBuffer, &stagingBuffer, sizeof(indices), 0, 0, tempCommandPool);
+    DestroyGPUBufferInfo(&ld, &stagingBuffer);
 
-    GPUBufferData *uniformBuffers = malloc(sizeof(*uniformBuffers) * swapchainData.imageCount);
+    GPUBufferData *uniformBuffers = malloc(sizeof(*uniformBuffers) * rc.imageCount);
 
-    for (u32 i = 0; i < swapchainData.imageCount; i++)
+    for (u32 i = 0; i < rc.imageCount; i++)
     {
-        if (CreateGPUBufferData(&rc, physdev, sizeof(Uniform),
+        if (CreateGPUBufferData(&ld, physdev, sizeof(Uniform),
                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &uniformBuffers[i]) !=
             VK_SUCCESS)
@@ -703,21 +907,21 @@ int main(int argc, char **argv)
     }
 
     GPUBufferData uniformStagingBuffer;
-    if (CreateGPUBufferData(&rc, physdev, sizeof(Uniform), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    if (CreateGPUBufferData(&ld, physdev, sizeof(Uniform), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &uniformStagingBuffer) != VK_SUCCESS)
     {
         puts("could not set up uniform buffers");
         return 1;
     }
 
-    VkDescriptorPool descriptorPool = CreateDescriptorPool(&rc, &swapchainData, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    VkDescriptorPool descriptorPool = CreateDescriptorPool(&ld, &rc, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     if (!descriptorPool)
     {
         puts("Error could not create descriptor pool");
         return 1;
     }
 
-    VkDescriptorSet *descriptorSets = AllocateDescriptorSets(&rc, &swapchainData,
+    VkDescriptorSet *descriptorSets = AllocateDescriptorSets(&ld, &rc,
                                                              descriptorPool, uniformBuffers,
                                                              descriptorSetLayout, sizeof(Uniform));
 
@@ -725,7 +929,7 @@ int main(int argc, char **argv)
 
     VkCommandBuffer *commandBuffers =
         ApplicationSetupCommandBuffers(
-            &rc, &swapchainData, commandPool,
+            &ld, &rc, commandPool,
             renderpass, pipeline,
             framebuffers,
             &vertexBuffer, offsets,
@@ -738,12 +942,15 @@ int main(int argc, char **argv)
     }
 
     Semaphores s;
-    if (!ApplicationCreateSemaphores(&rc, &s, MAX_CONCURRENT_FRAMES))
+    if (!ApplicationCreateSemaphores(&ld, &s, MAX_CONCURRENT_FRAMES))
     {
         puts("Could not get semaphores");
         return returnValue;
     }
     u32 frameCount = 0;
+
+    Texture tex = {0};
+    LoadTexture(&ld, physdev, "textures/container.jpg", tempCommandPool, &tex);
 
     double lastFrameTime = glfwGetTime();
     float totalTime = 0;
@@ -764,21 +971,21 @@ int main(int argc, char **argv)
 
         /* Update */
         Uniform u = {
-            .proj = CreatePerspectiveMat4f(DegToRad(45), swapchainData.e.width / (float)swapchainData.e.height, .1f, 10),
+            .proj = CreatePerspectiveMat4f(DegToRad(45), rc.e.width / (float)rc.e.height, .1f, 10),
             .view = CalcLookAtMat4f(vec3f(2, 2, 2), vec3f(0, 0, 0), vec3f(0, 0, 1)),
             .model = RotateMat4f(&IdMat4f, totalTime * DegToRad(90), vec3f(0, 0, 1)),
         };
         u.proj.e[1][1] = -1;
 
         /* render */
-        DrawResult result = ApplicationDrawImage(&rc, &swapchainData, &u,
+        DrawResult result = ApplicationDrawImage(&ld, &rc, &u,
                                                  uniformBuffers, &uniformStagingBuffer, commandPool,
                                                  commandBuffers, s.imageAvailableSemaphores[sindex],
                                                  s.renderFinishedSemaphores[sindex], s.fences[sindex]);
 
         if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
-            ApplicationRecreateRenderContextData(&rc, &swapchainData, win, physdev, surf,
+            ApplicationRecreateRenderContextData(&ld, &rc, win, physdev, surf,
                                                  &vertexBuffer, offsets,
                                                  &indexBuffer, 0,
                                                  commandPool, vertShader, fragShader,
@@ -815,43 +1022,46 @@ int main(int argc, char **argv)
        the device isn't doing work which means deinitialization can fail. Yeah.
        so uhhh... don't let that happen */
 
-    vkDeviceWaitIdle(rc.dev);
+    vkDeviceWaitIdle(ld.dev);
     /* Cleanup */
 
-    vkDestroyDescriptorPool(rc.dev, descriptorPool, NULL);
+    vkDestroyDescriptorPool(ld.dev, descriptorPool, NULL);
 
-    vkDestroyShaderModule(rc.dev, vertShader, NULL);
-    vkDestroyShaderModule(rc.dev, fragShader, NULL);
+    vkDestroyShaderModule(ld.dev, vertShader, NULL);
+    vkDestroyShaderModule(ld.dev, fragShader, NULL);
 
     for (u32 i = 0; i < s.count; i++)
     {
-        vkDestroySemaphore(rc.dev, s.renderFinishedSemaphores[i], NULL);
-        vkDestroySemaphore(rc.dev, s.imageAvailableSemaphores[i], NULL);
-        vkDestroyFence(rc.dev, s.fences[i], NULL);
+        vkDestroySemaphore(ld.dev, s.renderFinishedSemaphores[i], NULL);
+        vkDestroySemaphore(ld.dev, s.imageAvailableSemaphores[i], NULL);
+        vkDestroyFence(ld.dev, s.fences[i], NULL);
     }
     free(s.imageAvailableSemaphores);
     free(s.renderFinishedSemaphores);
     free(s.fences);
-    u32 imageCount = swapchainData.imageCount;
+    u32 imageCount = rc.imageCount;
 
-    ApplicationDestroyRenderContextAndRelatedData(&rc, &swapchainData, commandPool, commandBuffers,
+    ApplicationDestroyRenderContextAndRelatedData(&ld, &rc, commandPool, commandBuffers,
                                                   framebuffers, pipeline, layout,
                                                   renderpass);
 
-    vkDestroyDescriptorSetLayout(rc.dev, descriptorSetLayout, NULL);
+    vkDestroyDescriptorSetLayout(ld.dev, descriptorSetLayout, NULL);
     for (u32 i = 0; i < imageCount; i++)
     {
-        DestroyGPUBufferInfo(&rc, &uniformBuffers[i]);
+        DestroyGPUBufferInfo(&ld, &uniformBuffers[i]);
     }
-    DestroyGPUBufferInfo(&rc, &uniformStagingBuffer);
+    DestroyGPUBufferInfo(&ld, &uniformStagingBuffer);
 
-    DestroyGPUBufferInfo(&rc, &vertexBuffer);
-    DestroyGPUBufferInfo(&rc, &indexBuffer);
+    DestroyGPUBufferInfo(&ld, &vertexBuffer);
+    DestroyGPUBufferInfo(&ld, &indexBuffer);
 
-    vkDestroyCommandPool(rc.dev, commandPool, NULL);
-    vkDestroyCommandPool(rc.dev, tempCommandPool, NULL);
+    vkFreeMemory(ld.dev, tex.texMem, NULL);
+    vkDestroyImage(ld.dev, tex.image, NULL);
 
-    DestroyLogicalDevice(&rc);
+    vkDestroyCommandPool(ld.dev, commandPool, NULL);
+    vkDestroyCommandPool(ld.dev, tempCommandPool, NULL);
+
+    DestroyLogicalDevice(&ld);
 
     vkDestroySurfaceKHR(instance, surf, NULL);
     if (callback != VK_NULL_HANDLE)

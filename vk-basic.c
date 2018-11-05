@@ -2,7 +2,6 @@
 #include "features.h"
 #include "rutils/math.h"
 #include "rutils/string.h"
-#include <string.h>
 
 VkPhysicalDevice GetVkPhysicalDevice(VkInstance instance, VkSurfaceKHR surf,
                                      const char **expectedDeviceExtensions,
@@ -571,8 +570,8 @@ VkCommandPool CreateCommandPool(LogicalDevice *ld, VkCommandPoolCreateFlags flag
     return ret;
 }
 
-local bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
-                          VkMemoryPropertyFlags properties, u32 *out)
+bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
+                    VkMemoryPropertyFlags properties, u32 *out)
 {
     VkPhysicalDeviceMemoryProperties memproperties;
 

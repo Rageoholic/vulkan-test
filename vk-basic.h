@@ -117,11 +117,15 @@ void CopyGPUBuffer(LogicalDevice *ld,
                    GPUBufferData *dest, GPUBufferData *src,
                    VkDeviceSize size, VkDeviceSize offsetDest,
                    VkDeviceSize offsetSrc, VkCommandPool commandPool);
+
 VkDescriptorPool CreateDescriptorPool(LogicalDevice *ld, RenderContext *swapchain, VkDescriptorType type);
 
 VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *rc,
                                         VkDescriptorPool descriptorPool,
                                         GPUBufferData *buffers, VkDescriptorSetLayout layout,
                                         VkDeviceSize typeSize);
+
+bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
+                    VkMemoryPropertyFlags properties, u32 *out);
 
 #endif

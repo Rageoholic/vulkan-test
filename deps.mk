@@ -11,7 +11,8 @@ LDFLAGS += -lglfw -lvulkan -lm
 
 CFLAGS += -g
 all: app $(VERT_SHADER_TARGETS) $(FRAG_SHADER_TARGETS)
-app: app.o vk-basic.o rutils/math.o rutils/file.o rutils/string.o
+stb_image.o: CFLAGS+=-Wno-cast-qual -Wno-disabled-macro-expansion -Wno-cast-align -Wno-comma -Wno-conversion
+app: app.o stb_image.o vk-basic.o rutils/math.o rutils/file.o rutils/string.o
 
 shaders/%.vert.spv: shaders/%.vert
 	glslangValidator -V $< -o $@
