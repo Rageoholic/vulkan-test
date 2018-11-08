@@ -14,6 +14,7 @@ typedef struct QueueIndices
 typedef struct LogicalDevice
 {
     VkDevice dev;
+    VkPhysicalDevice physdev;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
     QueueIndices indices;
@@ -44,6 +45,14 @@ typedef struct GPUBufferData
     VkBuffer buffer;
     VkDeviceMemory deviceMemory;
 } GPUBufferData;
+
+typedef struct DepthResources
+{
+    VkImage image;
+    VkDeviceMemory mem;
+    VkImageView view;
+    VkFormat format;
+} DepthResources;
 
 typedef int (*SuitableDeviceCheck)(VkPhysicalDevice dev,
                                    VkSurfaceKHR surf,
@@ -77,28 +86,30 @@ VkShaderModule CreateVkShaderModule(const LogicalDevice *ld,
                                     usize shaderLen);
 
 VkPipeline CreateGraphicsPipeline(const LogicalDevice *ld,
-                                  const RenderContext *rc,
+                                  const RenderContext *data,
                                   VkShaderModule vertShader,
                                   VkShaderModule fragShader,
                                   VkRenderPass renderpass,
-                                  VkDescriptorSetLayout *descriptorSets,
+                                  VkDescriptorSetLayout *descriptorSetLayouts,
                                   u32 descriptorSetsCount,
                                   VkPipelineVertexInputStateCreateInfo *vertexInputInfo,
+                                  DepthResources *dr,
                                   VkPipelineLayout *layout);
 
-VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *rc);
+VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data, const DepthResources *dr);
 
-VkFramebuffer *CreateFrameBuffers(const LogicalDevice *ld, const RenderContext *rc, VkRenderPass renderpass);
+VkFramebuffer *CreateFrameBuffers(const LogicalDevice *ld, const RenderContext *data, VkRenderPass renderpass,
+                                  const DepthResources *dr);
 
 VkCommandPool CreateCommandPool(LogicalDevice *ld, VkCommandPoolCreateFlags flags);
 
-errcode CreateRenderContext(LogicalDevice *ld, VkPhysicalDevice physdev,
+errcode CreateRenderContext(LogicalDevice *ld,
                             VkSurfaceKHR surf, u32 windowWidth,
                             u32 windowHeight, RenderContext *out);
 
 void DestroySwapChainData(LogicalDevice *ld, RenderContext *rc);
 
-VkResult CreateGPUBufferData(LogicalDevice *ld, VkPhysicalDevice physdev,
+VkResult CreateGPUBufferData(LogicalDevice *ld,
                              size_t vertexBufferSize,
                              VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                              GPUBufferData *buffer);
@@ -129,4 +140,18 @@ VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *data,
 bool FindMemoryType(VkPhysicalDevice physdev, u32 typefilter,
                     VkMemoryPropertyFlags properties, u32 *out);
 
+void DestroyDepthResources(LogicalDevice *ld, DepthResources *dr);
+
+bool CreateImageView(LogicalDevice *ld, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags,
+                     VkImageView *out);
+
+bool CreateVkImage(LogicalDevice *ld, u32 x, u32 y, VkFormat format, VkImageUsageFlags usage,
+                   VkImage *outImage, VkDeviceMemory *outMem);
+void TransitionImageLayout(LogicalDevice *ld, VkCommandPool commandPool, VkImage image, VkFormat format,
+                           VkImageLayout oldLayout, VkImageLayout newLayout);
+
+VkCommandBuffer BeginSingleTimeCommandBuffer(LogicalDevice *ld, VkCommandPool commandPool);
+
+void EndSingleTimeCommandBuffer(LogicalDevice *ld, VkCommandPool commandPool, VkCommandBuffer commandBuffer);
+bool CreateDepthResources(LogicalDevice *ld, RenderContext *rc, VkCommandPool commandPool, DepthResources *out);
 #endif

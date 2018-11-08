@@ -32,7 +32,7 @@ typedef enum DrawResult
 
 typedef struct Vertex
 {
-    Vec2f pos;
+    Vec3f pos;
     Vec3f color;
     Vec2f uv;
 } Vertex;
@@ -64,48 +64,20 @@ typedef struct Texture
 } Texture;
 
 local Vertex vertices[] = {
-    {{-0.5, -0.5}, {1, 0, 0}, {1, 0}},
-    {{.5, -.5}, {0, 1, 0}, {0, 0}},
-    {{.5, .5}, {0, 0, 1}, {0, 1}},
-    {{-.5, .5}, {1, 1, 1}, {1, 1}}};
-local u16 indices[] = {0, 1, 2, 2, 3, 0};
+    {{-0.5, -0.5, 0}, {1, 0, 0}, {1, 0}},
+    {{.5, -.5, 0}, {0, 1, 0}, {0, 0}},
+    {{.5, .5, 0}, {0, 0, 1}, {0, 1}},
+    {{-.5, .5, 0}, {1, 1, 1}, {1, 1}},
+    {{-0.5, -0.5, -.5}, {1, 0, 0}, {1, 0}},
+    {{.5, -.5, -.5}, {0, 1, 0}, {0, 0}},
+    {{.5, .5, -.5}, {0, 0, 1}, {0, 1}},
+    {{-.5, .5, -.5}, {1, 1, 1}, {1, 1}}};
+
+local u16 indices[] = {0, 1, 2, 2, 3, 0,
+                       4, 5, 6, 6, 7, 4};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
 
-local VkCommandBuffer BeginSingleTimeCommandBuffer(LogicalDevice *ld, VkCommandPool commandPool)
-{
-    VkCommandBufferAllocateInfo allocInfo = {0};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(ld->dev, &allocInfo, &commandBuffer);
-
-    VkCommandBufferBeginInfo beginInfo = {0};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-    return commandBuffer;
-}
-
-local void EndSingleTimeCommandBuffer(LogicalDevice *ld, VkCommandPool commandPool, VkCommandBuffer commandBuffer)
-{
-    vkEndCommandBuffer(commandBuffer);
-
-    VkSubmitInfo submitInfo = {0};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    vkQueueSubmit(ld->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(ld->graphicsQueue);
-
-    vkFreeCommandBuffers(ld->dev, commandPool, 1, &commandBuffer);
-}
 local void CopyBufferToImage(LogicalDevice *ld, VkCommandPool bufferCommandPool, GPUBufferData *texBuf, Texture *tex)
 {
     VkCommandBuffer commandBuffer = BeginSingleTimeCommandBuffer(ld, bufferCommandPool);
@@ -129,60 +101,7 @@ local void CopyBufferToImage(LogicalDevice *ld, VkCommandPool bufferCommandPool,
     EndSingleTimeCommandBuffer(ld, bufferCommandPool, commandBuffer);
 }
 
-local void TransitionImageLayout(LogicalDevice *ld, VkCommandPool commandPool, VkImage image, VkFormat format,
-                                 VkImageLayout oldLayout, VkImageLayout newLayout)
-{
-    ignore format;
-    VkCommandBuffer commandBuffer = BeginSingleTimeCommandBuffer(ld, commandPool);
-    {
-        VkImageMemoryBarrier barrier = {0};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
-
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
-        barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = 0;
-
-        VkPipelineStageFlags sourceStage;
-        VkPipelineStageFlags destinationStage;
-
-        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-        {
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        }
-        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-        {
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        }
-        else
-        {
-            ERROR("Invalid state transition");
-        }
-
-        vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, NULL, 0, 0, 1, &barrier);
-    }
-    EndSingleTimeCommandBuffer(ld, commandPool, commandBuffer);
-}
-
-local errcode LoadTexture(LogicalDevice *ld, VkPhysicalDevice physdev,
+local errcode LoadTexture(LogicalDevice *ld,
                           const char *path, VkCommandPool bufferCommandPool,
                           Texture *tex)
 {
@@ -200,7 +119,7 @@ local errcode LoadTexture(LogicalDevice *ld, VkPhysicalDevice physdev,
 
     GPUBufferData texBuf;
 
-    if (CreateGPUBufferData(ld, physdev, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    if (CreateGPUBufferData(ld, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                             &texBuf) != VK_SUCCESS)
@@ -210,45 +129,12 @@ local errcode LoadTexture(LogicalDevice *ld, VkPhysicalDevice physdev,
 
     OutputDataToBuffer(ld, &texBuf, image, imageSize, 0);
 
-    VkImageCreateInfo imageInfo = {0};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = tex->x;
-    imageInfo.extent.height = tex->y;
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-
-    if (vkCreateImage(ld->dev, &imageInfo, NULL, &tex->image) != VK_SUCCESS)
+    if (!CreateVkImage(ld, tex->x, tex->y, VK_FORMAT_R8G8B8A8_UNORM,
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       &tex->image, &tex->texMem))
     {
         return ERROR_EXTERNAL_LIB;
     }
-
-    VkMemoryRequirements memReq = {0};
-    vkGetImageMemoryRequirements(ld->dev, tex->image, &memReq);
-
-    VkMemoryAllocateInfo allocInfo = {0};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
-    if (!FindMemoryType(physdev, memReq.memoryTypeBits,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                        &allocInfo.memoryTypeIndex))
-    {
-        return ERROR_EXTERNAL_LIB;
-    }
-
-    if (vkAllocateMemory(ld->dev, &allocInfo, NULL, &tex->texMem))
-    {
-        return ERROR_EXTERNAL_LIB;
-    }
-
-    vkBindImageMemory(ld->dev, tex->image, tex->texMem, 0);
 
     TransitionImageLayout(ld, bufferCommandPool, tex->image,
                           VK_FORMAT_R8G8B8A8_UNORM,
@@ -262,18 +148,7 @@ local errcode LoadTexture(LogicalDevice *ld, VkPhysicalDevice physdev,
 
     DestroyGPUBufferInfo(ld, &texBuf);
 
-    VkImageViewCreateInfo viewInfo = {0};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = tex->image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    if (vkCreateImageView(ld->dev, &viewInfo, NULL, &tex->imageView) != VK_SUCCESS)
+    if (!CreateImageView(ld, tex->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &tex->imageView))
     {
         return ERROR_EXTERNAL_LIB;
     }
@@ -345,9 +220,11 @@ local VkCommandBuffer *ApplicationSetupCommandBuffers(LogicalDevice *ld, RenderC
         renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
         renderPassInfo.renderArea.extent = rc->e;
 
-        VkClearValue clearColor = {.1f, .1f, .1f, 1};
-        renderPassInfo.clearValueCount = 1;
-        renderPassInfo.pClearValues = &clearColor;
+        VkClearValue clearValues[2] = {0};
+        clearValues[0].color = (VkClearColorValue){.1, .1, .1, 1};
+        clearValues[1].depthStencil = (VkClearDepthStencilValue){1, 0};
+        renderPassInfo.clearValueCount = countof(clearValues);
+        renderPassInfo.pClearValues = clearValues;
 
         vkCmdBeginRenderPass(ret[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         {
@@ -581,7 +458,8 @@ local void ApplicationDestroyRenderContextAndRelatedData(LogicalDevice *ld, Rend
                                                          VkCommandBuffer *cbuffers,
                                                          VkFramebuffer *framebuffers,
                                                          VkPipeline pipeline, VkPipelineLayout layout,
-                                                         VkRenderPass renderpass)
+                                                         VkRenderPass renderpass,
+                                                         DepthResources *dr)
 {
     for (u32 i = 0; i < rc->imageCount; i++)
     {
@@ -593,20 +471,22 @@ local void ApplicationDestroyRenderContextAndRelatedData(LogicalDevice *ld, Rend
     vkDestroyPipeline(ld->dev, pipeline, NULL);
     vkDestroyPipelineLayout(ld->dev, layout, NULL);
     vkDestroyRenderPass(ld->dev, renderpass, NULL);
+    DestroyDepthResources(ld, dr);
     DestroySwapChainData(ld, rc);
 }
 
 local bool ApplicationRecreateRenderContextData(LogicalDevice *ld, RenderContext *rc, GLFWwindow *win,
-                                                VkPhysicalDevice physdev, VkSurfaceKHR surf,
-                                                GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
+                                                VkSurfaceKHR surf, GPUBufferData *vertexBuffers, VkDeviceSize *offsets,
                                                 GPUBufferData *indexBuffer, VkDeviceSize indexOffset,
                                                 VkCommandPool cpool,
+                                                VkCommandPool tempCommandPool,
                                                 VkShaderModule vertShader, VkShaderModule fragShader,
                                                 VkDescriptorSetLayout descriptorSetLayouts,
                                                 VkDescriptorSet *descriptorSets,
                                                 VkPipelineVertexInputStateCreateInfo *inputInfo,
                                                 VkCommandBuffer **cbuffers,
                                                 VkFramebuffer **framebuffers,
+                                                DepthResources *dr,
                                                 VkPipeline *pipeline, VkPipelineLayout *layout,
                                                 VkRenderPass *renderpass)
 {
@@ -617,21 +497,26 @@ local bool ApplicationRecreateRenderContextData(LogicalDevice *ld, RenderContext
     vkDeviceWaitIdle(ld->dev);
     ApplicationDestroyRenderContextAndRelatedData(ld, rc, cpool, *cbuffers,
                                                   *framebuffers, *pipeline, *layout,
-                                                  *renderpass);
+                                                  *renderpass, dr);
     int wwidth, wheight;
     glfwGetWindowSize(win, &wwidth, &wheight);
-    if (CreateRenderContext(ld, physdev, surf, wwidth, wheight, rc) != ERROR_SUCCESS)
+    if (CreateRenderContext(ld, surf, wwidth, wheight, rc) != ERROR_SUCCESS)
     {
         return false;
     }
-    *renderpass = CreateRenderPass(ld, rc);
+
+    if (!CreateDepthResources(ld, rc, tempCommandPool, dr))
+    {
+        return false;
+    }
+    *renderpass = CreateRenderPass(ld, rc, dr);
     *pipeline = CreateGraphicsPipeline(ld, rc,
                                        vertShader, fragShader,
                                        *renderpass,
                                        &descriptorSetLayouts, 1,
-                                       inputInfo, layout);
+                                       inputInfo, dr, layout);
 
-    *framebuffers = CreateFrameBuffers(ld, rc, *renderpass);
+    *framebuffers = CreateFrameBuffers(ld, rc, *renderpass, dr);
     *cbuffers = ApplicationSetupCommandBuffers(ld, rc, cpool,
                                                *renderpass, *pipeline,
                                                *framebuffers, vertexBuffers, offsets,
@@ -770,7 +655,7 @@ int main(int argc, char **argv)
     glfwGetWindowSize(win, &wwidth, &wheight);
 
     RenderContext rc = {0};
-    if (CreateRenderContext(&ld, physdev, surf, wwidth, wheight, &rc) != ERROR_SUCCESS)
+    if (CreateRenderContext(&ld, surf, wwidth, wheight, &rc) != ERROR_SUCCESS)
     {
         puts("NOT ABLE TO CREATE SWAPCHAIN");
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -805,7 +690,27 @@ int main(int argc, char **argv)
     }
     UnmapMappedBuffer(fragShaderCode, fragShaderSize);
 
-    VkRenderPass renderpass = CreateRenderPass(&ld, &rc);
+    VkCommandPool commandPool = CreateCommandPool(&ld, 0);
+    if (commandPool == VK_NULL_HANDLE)
+    {
+        puts("Could not create command pool");
+        return returnValue;
+    }
+
+    VkCommandPool tempCommandPool = CreateCommandPool(&ld, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
+    if (commandPool == VK_NULL_HANDLE)
+    {
+        puts("Could not create command pool");
+        return returnValue;
+    }
+
+    DepthResources depthResources;
+    if (!CreateDepthResources(&ld, &rc, tempCommandPool, &depthResources))
+    {
+        puts("Could not create depth resources");
+    }
+
+    VkRenderPass renderpass = CreateRenderPass(&ld, &rc, &depthResources);
     if (renderpass == VK_NULL_HANDLE)
     {
         returnValue = ERROR_INITIALIZATION_FAILURE;
@@ -821,7 +726,7 @@ int main(int argc, char **argv)
 
     attributeDescription[0].binding = 0;
     attributeDescription[0].location = 0;
-    attributeDescription[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescription[0].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributeDescription[0].offset = offsetof(Vertex, pos);
 
     attributeDescription[1].binding = 0;
@@ -868,8 +773,7 @@ int main(int argc, char **argv)
     VkPipeline pipeline = CreateGraphicsPipeline(&ld, &rc,
                                                  vertShader, fragShader, renderpass,
                                                  &descriptorSetLayout, 1,
-                                                 &vertexInputInfo,
-                                                 &layout);
+                                                 &vertexInputInfo, &depthResources, &layout);
     if (pipeline == VK_NULL_HANDLE)
     {
         puts("Could not create graphics pipeline");
@@ -877,30 +781,16 @@ int main(int argc, char **argv)
         return returnValue;
     }
 
-    VkFramebuffer *framebuffers = CreateFrameBuffers(&ld, &rc, renderpass);
+    VkFramebuffer *framebuffers = CreateFrameBuffers(&ld, &rc, renderpass, &depthResources);
     if (framebuffers == NULL)
     {
         puts("Could not create framebuffer");
         return returnValue;
     }
 
-    VkCommandPool commandPool = CreateCommandPool(&ld, 0);
-    if (commandPool == VK_NULL_HANDLE)
-    {
-        puts("Could not create command pool");
-        return returnValue;
-    }
-
-    VkCommandPool tempCommandPool = CreateCommandPool(&ld, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
-    if (commandPool == VK_NULL_HANDLE)
-    {
-        puts("Could not create command pool");
-        return returnValue;
-    }
-
     GPUBufferData stagingBuffer;
 
-    if (CreateGPUBufferData(&ld, physdev, sizeof(vertices),
+    if (CreateGPUBufferData(&ld, sizeof(vertices),
                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             &stagingBuffer) != VK_SUCCESS)
@@ -912,7 +802,7 @@ int main(int argc, char **argv)
     OutputDataToBuffer(&ld, &stagingBuffer, vertices, sizeof(vertices), 0);
 
     GPUBufferData vertexBuffer;
-    if (CreateGPUBufferData(&ld, physdev, sizeof(vertices),
+    if (CreateGPUBufferData(&ld, sizeof(vertices),
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vertexBuffer) !=
         VK_SUCCESS)
@@ -925,7 +815,7 @@ int main(int argc, char **argv)
 
     DestroyGPUBufferInfo(&ld, &stagingBuffer);
 
-    if (CreateGPUBufferData(&ld, physdev, sizeof(indices),
+    if (CreateGPUBufferData(&ld, sizeof(indices),
                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             &stagingBuffer) != VK_SUCCESS)
@@ -937,7 +827,7 @@ int main(int argc, char **argv)
     OutputDataToBuffer(&ld, &stagingBuffer, indices, sizeof(indices), 0);
 
     GPUBufferData indexBuffer;
-    if (CreateGPUBufferData(&ld, physdev, sizeof(indices),
+    if (CreateGPUBufferData(&ld, sizeof(indices),
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &indexBuffer) !=
         VK_SUCCESS)
@@ -953,7 +843,7 @@ int main(int argc, char **argv)
 
     for (u32 i = 0; i < rc.imageCount; i++)
     {
-        if (CreateGPUBufferData(&ld, physdev, sizeof(Uniform),
+        if (CreateGPUBufferData(&ld, sizeof(Uniform),
                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &uniformBuffers[i]) !=
             VK_SUCCESS)
@@ -964,7 +854,7 @@ int main(int argc, char **argv)
     }
 
     GPUBufferData uniformStagingBuffer;
-    if (CreateGPUBufferData(&ld, physdev, sizeof(Uniform), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    if (CreateGPUBufferData(&ld, sizeof(Uniform), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &uniformStagingBuffer) != VK_SUCCESS)
     {
         puts("could not set up uniform buffers");
@@ -986,7 +876,7 @@ int main(int argc, char **argv)
     }
 
     Texture tex = {0};
-    if (LoadTexture(&ld, physdev, "textures/container.jpg", tempCommandPool, &tex) != ERROR_SUCCESS)
+    if (LoadTexture(&ld, "textures/container.jpg", tempCommandPool, &tex) != ERROR_SUCCESS)
     {
         puts("Couldn't load texture");
         return 1;
@@ -1059,14 +949,15 @@ int main(int argc, char **argv)
 
         if (result == SWAP_CHAIN_OUT_OF_DATE || resizeOccurred)
         {
-            ApplicationRecreateRenderContextData(&ld, &rc, win, physdev, surf,
+            ApplicationRecreateRenderContextData(&ld, &rc, win, surf,
                                                  &vertexBuffer, offsets,
                                                  &indexBuffer, 0,
-                                                 commandPool, vertShader, fragShader,
+                                                 commandPool, tempCommandPool,
+                                                 vertShader, fragShader,
                                                  descriptorSetLayout,
                                                  descriptorSets,
                                                  &vertexInputInfo, &commandBuffers,
-                                                 &framebuffers, &pipeline,
+                                                 &framebuffers, &depthResources, &pipeline,
                                                  &layout, &renderpass);
             resizeOccurred = false;
         }
@@ -1117,7 +1008,7 @@ int main(int argc, char **argv)
 
     ApplicationDestroyRenderContextAndRelatedData(&ld, &rc, commandPool, commandBuffers,
                                                   framebuffers, pipeline, layout,
-                                                  renderpass);
+                                                  renderpass, &depthResources);
 
     vkDestroyDescriptorSetLayout(ld.dev, descriptorSetLayout, NULL);
     for (u32 i = 0; i < imageCount; i++)
