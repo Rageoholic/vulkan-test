@@ -676,16 +676,14 @@ void CopyGPUBuffer(LogicalDevice *ld,
     vkFreeCommandBuffers(ld->dev, commandPool, 1, &commandBuffer);
 }
 
-VkDescriptorPool CreateDescriptorPool(LogicalDevice *ld, RenderContext *swapchain, VkDescriptorType type)
+VkDescriptorPool CreateDescriptorPool(LogicalDevice *ld, RenderContext *swapchain,
+                                      u32 poolSizeCount, VkDescriptorPoolSize *poolSizes)
 {
-    VkDescriptorPoolSize poolSize = {0};
-    poolSize.type = type;
-    poolSize.descriptorCount = swapchain->imageCount;
 
     VkDescriptorPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = poolSizeCount;
+    poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = swapchain->imageCount;
     VkDescriptorPool ret;
 
@@ -699,7 +697,7 @@ VkDescriptorPool CreateDescriptorPool(LogicalDevice *ld, RenderContext *swapchai
 VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *data,
                                         VkDescriptorPool descriptorPool,
                                         GPUBufferData *buffers, VkDescriptorSetLayout layout,
-                                        VkDeviceSize typeSize)
+                                        VkDeviceSize typeSize, VkImageView imageView, VkSampler sampler)
 {
     VkDescriptorSet *ret = malloc(data->imageCount * sizeof(*ret));
     VkDescriptorSetLayout descriptorSetLayouts[data->imageCount];
@@ -707,6 +705,7 @@ VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *data,
     {
         descriptorSetLayouts[i] = layout;
     }
+
     VkDescriptorSetAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
@@ -715,7 +714,6 @@ VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *data,
 
     if (vkAllocateDescriptorSets(ld->dev, &allocInfo, ret) != VK_SUCCESS)
     {
-        puts("Could not allocate descriptor sets");
         return NULL;
     }
 
@@ -726,16 +724,29 @@ VkDescriptorSet *AllocateDescriptorSets(LogicalDevice *ld, RenderContext *data,
         bufferInfo.offset = 0;
         bufferInfo.range = typeSize;
 
-        VkWriteDescriptorSet descriptorWrite = {0};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = ret[i];
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
+        VkDescriptorImageInfo imageInfo = {0};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = imageView;
+        imageInfo.sampler = sampler;
 
-        vkUpdateDescriptorSets(ld->dev, 1, &descriptorWrite, 0, NULL);
+        VkWriteDescriptorSet descriptorWrites[2] = {0};
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[0].dstSet = ret[i];
+        descriptorWrites[0].dstBinding = 0;
+        descriptorWrites[0].dstArrayElement = 0;
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrites[0].descriptorCount = 1;
+        descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[1].dstSet = ret[i];
+        descriptorWrites[1].dstBinding = 1;
+        descriptorWrites[1].dstArrayElement = 0;
+        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[1].descriptorCount = 1;
+        descriptorWrites[1].pImageInfo = &imageInfo;
+
+        vkUpdateDescriptorSets(ld->dev, countof(descriptorWrites), descriptorWrites, 0, NULL);
     }
     return ret;
 }

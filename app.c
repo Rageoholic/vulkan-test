@@ -34,6 +34,7 @@ typedef struct Vertex
 {
     Vec2f pos;
     Vec3f color;
+    Vec2f uv;
 } Vertex;
 
 typedef struct Uniform
@@ -55,16 +56,18 @@ typedef struct Texture
 {
     VkImage image;
     VkDeviceMemory texMem;
+    VkImageView imageView;
+    VkSampler sampler;
     u32 x;
     u32 y;
     int bytesPerPixel;
 } Texture;
 
 local Vertex vertices[] = {
-    {{-0.5, -0.5}, {1, 0, 0}},
-    {{.5, -.5}, {0, 1, 0}},
-    {{.5, .5}, {0, 0, 1}},
-    {{-.5, .5}, {1, 1, 1}}};
+    {{-0.5, -0.5}, {1, 0, 0}, {1, 0}},
+    {{.5, -.5}, {0, 1, 0}, {0, 0}},
+    {{.5, .5}, {0, 0, 1}, {0, 1}},
+    {{-.5, .5}, {1, 1, 1}, {1, 1}}};
 local u16 indices[] = {0, 1, 2, 2, 3, 0};
 
 local const char *validationLayers[] = {"VK_LAYER_LUNARG_standard_validation"};
@@ -258,6 +261,46 @@ local errcode LoadTexture(LogicalDevice *ld, VkPhysicalDevice physdev,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     DestroyGPUBufferInfo(ld, &texBuf);
+
+    VkImageViewCreateInfo viewInfo = {0};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = tex->image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(ld->dev, &viewInfo, NULL, &tex->imageView) != VK_SUCCESS)
+    {
+        return ERROR_EXTERNAL_LIB;
+    }
+
+    VkSamplerCreateInfo samplerInfo = {0};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_TRUE;
+    samplerInfo.maxAnisotropy = 16;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;
+
+    if (vkCreateSampler(ld->dev, &samplerInfo, NULL, &tex->sampler) != VK_SUCCESS)
+    {
+        return ERROR_EXTERNAL_LIB;
+    }
 
     return ERROR_SUCCESS;
 }
@@ -510,6 +553,8 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
     VkPhysicalDeviceProperties devProps;
 
     vkGetPhysicalDeviceProperties(dev, &devProps);
+    VkPhysicalDeviceFeatures features;
+    vkGetPhysicalDeviceFeatures(dev, &features);
 
     if (!(devProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
           devProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU))
@@ -518,7 +563,8 @@ local int ApplicationCheckDevice(VkPhysicalDevice dev,
     }
 
     if (properIndices &&
-        CheckDeviceExtensionSupport(dev, extensionList, extensionCount))
+        CheckDeviceExtensionSupport(dev, extensionList, extensionCount) &&
+        features.samplerAnisotropy)
     {
         SwapChainSupportDetails sd = QuerySwapChainSupport(dev, surf);
 
@@ -710,6 +756,7 @@ int main(int argc, char **argv)
     }
 
     VkPhysicalDeviceFeatures features = {0};
+    features.samplerAnisotropy = VK_TRUE;
     LogicalDevice ld;
     if (CreateLogicalDevice(physdev, &features, surf,
                             &ld) != ERROR_SUCCESS)
@@ -770,7 +817,7 @@ int main(int argc, char **argv)
     bindingDescription.binding = 0;
     bindingDescription.stride = sizeof(Vertex);
     bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    VkVertexInputAttributeDescription attributeDescription[2] = {0};
+    VkVertexInputAttributeDescription attributeDescription[3] = {0};
 
     attributeDescription[0].binding = 0;
     attributeDescription[0].location = 0;
@@ -782,6 +829,11 @@ int main(int argc, char **argv)
     attributeDescription[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributeDescription[1].offset = offsetof(Vertex, color);
 
+    attributeDescription[2].binding = 0;
+    attributeDescription[2].location = 2;
+    attributeDescription[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescription[2].offset = offsetof(Vertex, uv);
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {0};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexAttributeDescriptionCount = countof(attributeDescription);
@@ -789,16 +841,21 @@ int main(int argc, char **argv)
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
 
-    VkDescriptorSetLayoutBinding uboLayoutBinding = {0};
-    uboLayoutBinding.binding = 0;
-    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboLayoutBinding.descriptorCount = 1;
-    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutBinding layoutBindings[2] = {0};
+    layoutBindings[0].binding = 0;
+    layoutBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    layoutBindings[0].descriptorCount = 1;
+    layoutBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    layoutBindings[1].binding = 1;
+    layoutBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    layoutBindings[1].descriptorCount = 1;
+    layoutBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &uboLayoutBinding;
+    layoutInfo.bindingCount = countof(layoutBindings);
+    layoutInfo.pBindings = layoutBindings;
     VkDescriptorSetLayout descriptorSetLayout;
 
     if (vkCreateDescriptorSetLayout(ld.dev, &layoutInfo, NULL, &descriptorSetLayout) != VK_SUCCESS)
@@ -914,17 +971,37 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    VkDescriptorPool descriptorPool = CreateDescriptorPool(&ld, &rc, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    VkDescriptorPoolSize poolSizes[2] = {0};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = rc.imageCount;
+
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = rc.imageCount;
+
+    VkDescriptorPool descriptorPool = CreateDescriptorPool(&ld, &rc, countof(poolSizes), poolSizes);
     if (!descriptorPool)
     {
         puts("Error could not create descriptor pool");
         return 1;
     }
 
+    Texture tex = {0};
+    if (LoadTexture(&ld, physdev, "textures/container.jpg", tempCommandPool, &tex) != ERROR_SUCCESS)
+    {
+        puts("Couldn't load texture");
+        return 1;
+    }
+
     VkDescriptorSet *descriptorSets = AllocateDescriptorSets(&ld, &rc,
                                                              descriptorPool, uniformBuffers,
-                                                             descriptorSetLayout, sizeof(Uniform));
+                                                             descriptorSetLayout, sizeof(Uniform),
+                                                             tex.imageView, tex.sampler);
 
+    if (descriptorSets == NULL)
+    {
+        puts("error. Couldn't allocate descriptor sets");
+        return 1;
+    }
     VkDeviceSize offsets[1] = {0};
 
     VkCommandBuffer *commandBuffers =
@@ -948,9 +1025,6 @@ int main(int argc, char **argv)
         return returnValue;
     }
     u32 frameCount = 0;
-
-    Texture tex = {0};
-    LoadTexture(&ld, physdev, "textures/container.jpg", tempCommandPool, &tex);
 
     double lastFrameTime = glfwGetTime();
     float totalTime = 0;
@@ -1055,6 +1129,8 @@ int main(int argc, char **argv)
     DestroyGPUBufferInfo(&ld, &vertexBuffer);
     DestroyGPUBufferInfo(&ld, &indexBuffer);
 
+    vkDestroySampler(ld.dev, tex.sampler, NULL);
+    vkDestroyImageView(ld.dev, tex.imageView, NULL);
     vkFreeMemory(ld.dev, tex.texMem, NULL);
     vkDestroyImage(ld.dev, tex.image, NULL);
 
