@@ -493,8 +493,9 @@ VkPipeline CreateGraphicsPipeline(const LogicalDevice *ld,
 
     return graphicsPipeline;
 }
-
-VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data, const DepthResources *dr)
+VkRenderPass CreateRenderPass(const LogicalDevice *ld,
+                              const RenderContext *data,
+                              const DepthResources *dr)
 {
     VkAttachmentDescription colorAttachment = {0};
     colorAttachment.format = data->format.format;
@@ -507,14 +508,17 @@ VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     VkAttachmentDescription depthAttachment = {0};
-    depthAttachment.format = dr->format;
-    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    if (dr)
+    {
+        depthAttachment.format = dr->format;
+        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
 
     VkAttachmentReference colorAttachRef = {0};
     colorAttachRef.attachment = 0;
@@ -531,7 +535,7 @@ VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachRef;
-    subpass.pDepthStencilAttachment = &depthAttachRef;
+    subpass.pDepthStencilAttachment = dr ? &depthAttachRef : NULL;
 
     VkSubpassDependency dependency = {0};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -547,7 +551,7 @@ VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data
 
     VkRenderPassCreateInfo renderPassInfo = {0};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.attachmentCount = dr ? 2 : 1;
     renderPassInfo.pAttachments = arr;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
@@ -556,7 +560,8 @@ VkRenderPass CreateRenderPass(const LogicalDevice *ld, const RenderContext *data
 
     VkRenderPass renderPass;
 
-    if (vkCreateRenderPass(ld->dev, &renderPassInfo, NULL, &renderPass) != VK_SUCCESS)
+    if (vkCreateRenderPass(ld->dev, &renderPassInfo, NULL, &renderPass) !=
+        VK_SUCCESS)
     {
         return VK_NULL_HANDLE;
     }
